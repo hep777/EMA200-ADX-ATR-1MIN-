@@ -1,0 +1,15 @@
+[Unit]
+Description=ATR (5m) Trading Bot - Binance USDT Perps
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/atr_bot
+EnvironmentFile=/opt/atr_bot/.env
+ExecStart=/usr/bin/python3 -u /opt/atr_bot/main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
