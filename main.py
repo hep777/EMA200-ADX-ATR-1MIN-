@@ -533,11 +533,34 @@ def _on_error(ws, error) -> None:
 
 
 def _on_close(ws, code, msg) -> None:
-    tg.send_message(f"⚠️ 연결 끊김\ncode={code}\nmsg={msg}")
+    tg.send_message(f"⚠️ 연결 끊김\ncode={code}\nmsg={msg}\n재연결 시도 중...")
 
 
 def _on_open(ws) -> None:
     logger.info("Websocket connected")
+
+
+def _run_websocket_batch(stream_url: str, batch_index: int, stream_count: int) -> None:
+    retry_delay = 3
+    while True:
+        try:
+            ws = websocket.WebSocketApp(
+                stream_url,
+                on_message=_on_message,
+                on_error=_on_error,
+                on_close=_on_close,
+                on_open=_on_open,
+            )
+            ws.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception as e:
+            logger.error(f"WS batch-{batch_index} crashed: {e}")
+
+        logger.warning(
+            f"WS batch-{batch_index} disconnected. "
+            f"streams={stream_count}, reconnect in {retry_delay}s"
+        )
+        time.sleep(retry_delay)
+        retry_delay = min(retry_delay * 2, 30)
 
 
 def start_websockets(symbols_lower: List[str]) -> None:
@@ -545,8 +568,12 @@ def start_websockets(symbols_lower: List[str]) -> None:
     for i in range(0, len(streams), STREAM_BATCH_SIZE):
         batch = streams[i : i + STREAM_BATCH_SIZE]
         stream_url = "wss://fstream.binance.com/stream?streams=" + "/".join(batch)
-        ws = websocket.WebSocketApp(stream_url, on_message=_on_message, on_error=_on_error, on_close=_on_close, on_open=_on_open)
-        threading.Thread(target=ws.run_forever, kwargs={"ping_interval": 20, "ping_timeout": 10}, daemon=True).start()
+        batch_index = (i // STREAM_BATCH_SIZE) + 1
+        threading.Thread(
+            target=_run_websocket_batch,
+            args=(stream_url, batch_index, len(batch)),
+            daemon=True,
+        ).start()
         time.sleep(0.3)
 
 

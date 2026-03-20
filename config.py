@@ -92,8 +92,8 @@ DEFAULT_ATR_MIN = _get_env_float("DEFAULT_ATR_MIN", 0.0)
 ATR_MIN_BY_SYMBOL = {}
 
 # Stops / trailing
-INITIAL_SL_ATR_MULT = _get_env_float("INITIAL_SL_ATR_MULT", 1.5)
-TRAILING_ATR_MULT = _get_env_float("TRAILING_ATR_MULT", 3.0)
+INITIAL_SL_ATR_MULT = _get_env_float("INITIAL_SL_ATR_MULT", 2.3)
+TRAILING_ATR_MULT = _get_env_float("TRAILING_ATR_MULT", 4.0)
 
 
 # ─────────────────────────────────────────────
