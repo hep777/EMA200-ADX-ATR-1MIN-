@@ -368,18 +368,37 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
         signal_state_map.pop(symbol_upper, None)
 
     if event == "BREAKOUT":
+        direction = str(next_state.get("direction", "")).upper() if next_state else "N/A"
         logger.info(
             "[%s] BREAKOUT symbol=%s price=%.6f phase=BREAKOUT",
             datetime.now(timezone.utc).isoformat(),
             symbol_upper,
             close,
         )
+        tg.send_message(
+            f"🧭 BREAKOUT 감지\n"
+            f"코인: #{symbol_upper}\n"
+            f"방향: {direction}\n"
+            f"가격: {_fmt_price(close)}\n"
+            f"상태: BREAKOUT\n\n"
+            f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
+        )
     elif event == "PULLBACK":
+        direction = str(next_state.get("direction", "")).upper() if next_state else "N/A"
         logger.info(
             "[%s] PULLBACK symbol=%s price=%.6f phase=PULLBACK",
             datetime.now(timezone.utc).isoformat(),
             symbol_upper,
             close,
+        )
+        tg.send_message(
+            f"⏳ 진입 대기(PULLBACK)\n"
+            f"코인: #{symbol_upper}\n"
+            f"방향: {direction}\n"
+            f"가격: {_fmt_price(close)}\n"
+            f"상태: PULLBACK\n"
+            f"마지막 조건만 남음: 재돌파(롱>breakout_high / 숏<breakout_low)\n\n"
+            f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
         )
     elif event == "STATE_RESET":
         logger.info(
