@@ -24,6 +24,7 @@ from binance_client import (
 )
 from config import (
     ATR_PERIOD,
+    CONFIRM_WITHIN_BARS,
     INITIAL_SL_ATR_MULT,
     LOCK_FILE,
     LOG_FILE,
@@ -243,7 +244,7 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
     bar_index_map[symbol_upper] = idx
     values = comp.update(high, low, close)
 
-    candidate = candidate_map.get(symbol_upper)
+    prev_candidate = candidate_map.get(symbol_upper)
     signal, next_candidate = decide_entry_signal(
         symbol_upper=symbol_upper,
         close_price=close,
@@ -251,13 +252,46 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
         atr=values["atr"],
         atr_ma30=values["atr_ma30"],
         adx=values["adx"],
-        candidate=candidate,
+        candidate=prev_candidate,
         bar_index=idx,
     )
+
     if next_candidate:
+        # "진입 감지"는 대기중이면 1회만 보내고, 방향이 바뀔 때만 다시 보냄(스팸 방지).
+        prev_direction = str(prev_candidate.get("direction", "")).lower() if prev_candidate else ""
+        next_direction = str(next_candidate.get("direction", "")).lower()
         candidate_map[symbol_upper] = next_candidate
-    elif symbol_upper in candidate_map:
-        candidate_map.pop(symbol_upper, None)
+        should_notify = (prev_candidate is None) or (prev_direction != next_direction)
+        if should_notify:
+            direction = str(next_candidate["direction"]).upper()
+            basis_close = float(next_candidate["basis_close"])
+            tg.send_message(
+                f"👀📌 진입 감지\n"
+                f"코인: #{symbol_upper}\n"
+                f"방향: {direction}\n"
+                f"기준종가: {_fmt_price(basis_close)}\n"
+                f"조건: EMA+ATR+ADX 통과\n"
+                    f"다음: 확인 캔들(5캔들) 대기\n\n"
+                f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
+            )
+    else:
+        # If a previous basis existed but expired, send "entry skip".
+        if prev_candidate and "basis_bar" in prev_candidate:
+            expired = (idx - int(prev_candidate["basis_bar"])) > CONFIRM_WITHIN_BARS
+            if expired:
+                direction = str(prev_candidate["direction"]).upper()
+                basis_close = float(prev_candidate["basis_close"])
+                tg.send_message(
+                    f"⛔ 진입 스킵\n"
+                    f"코인: #{symbol_upper}\n"
+                    f"방향: {direction}\n"
+                    f"기준종가: {_fmt_price(basis_close)}\n"
+                    f"사유: 확인 캔들 만료(5캔들)\n\n"
+                    f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
+                )
+
+        if symbol_upper in candidate_map:
+            candidate_map.pop(symbol_upper, None)
 
     if not signal:
         return
