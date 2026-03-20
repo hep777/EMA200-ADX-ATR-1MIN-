@@ -24,6 +24,9 @@ cp .env.example .env
 nano .env  # BINANCE_API_KEY / BINANCE_API_SECRET / TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 입력
 ```
 
+추가 전략 튜닝 값:
+- `EMA_SLOPE_MIN_PCT` : EMA200의 5봉 기울기 최소 비율 (기본 `0.001` = 0.1%)
+
 ### 4) systemd 서비스 등록
 ```sh
 sudo cp atr_bot.service /etc/systemd/system/atr_bot.service

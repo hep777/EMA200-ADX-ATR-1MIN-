@@ -85,6 +85,7 @@ journalctl -u atr_bot.service -n 100 --no-pager
 
 - `.env` 파일(키/시크릿)은 GitHub에 올리지 말 것
 - 서버에서 코드 갱신 후 반드시 `systemctl restart` 수행
+- 전략 튜닝 시 `.env`의 `EMA_SLOPE_MIN_PCT`(기본 `0.001`)로 EMA200 기울기 민감도 조정 가능
 - 중복 실행 의심 시:
 
 ```bash

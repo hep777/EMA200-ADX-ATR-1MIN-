@@ -4,8 +4,9 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 import websocket
 
@@ -25,15 +26,12 @@ from binance_client import (
 )
 from config import (
     ATR_PERIOD,
-    CONFIRM_WITHIN_BARS,
     ENABLE_SERVER_STOP,
-    INITIAL_SL_ATR_MULT,
     LOCK_FILE,
     LOG_FILE,
     MAX_CONCURRENT_POSITIONS,
     POSITION_RISK_PCT,
     STREAM_BATCH_SIZE,
-    TRAILING_ATR_MULT,
     validate_secrets,
 )
 from indicators import TrendIndicatorComputer
@@ -46,8 +44,13 @@ state_lock = threading.Lock()
 bot_active = True
 
 indicator_map: Dict[str, TrendIndicatorComputer] = {}
-candidate_map: Dict[str, Dict[str, float | int | str]] = {}
+signal_state_map: Dict[str, Dict[str, float | int | str]] = {}
 bar_index_map: Dict[str, int] = {}
+ema_history_map: Dict[str, Deque[float]] = {}
+low_window_map: Dict[str, Deque[float]] = {}
+high_window_map: Dict[str, Deque[float]] = {}
+last_close_map: Dict[str, float] = {}
+last_rsi_map: Dict[str, Optional[float]] = {}
 active_positions: Dict[str, Dict[str, Any]] = {}
 tracked_symbols: List[str] = []
 last_protection_sync_ts = 0.0
@@ -103,30 +106,49 @@ def _retry_call(fn, *args, **kwargs):
 
 def _bootstrap_symbol_indicators(symbol_upper: str) -> None:
     comp = TrendIndicatorComputer(ema_period=200, atr_period=ATR_PERIOD, adx_period=ATR_PERIOD)
+    ema_history_map[symbol_upper] = deque(maxlen=6)
+    low_window_map[symbol_upper] = deque(maxlen=10)
+    high_window_map[symbol_upper] = deque(maxlen=10)
+    last_close_map.pop(symbol_upper, None)
+    last_rsi_map[symbol_upper] = None
     klines = _retry_call(get_klines, symbol_upper, "1m", 500)
     if not klines:
         indicator_map[symbol_upper] = comp
         bar_index_map[symbol_upper] = 0
         return
     for k in klines:
+        open_ = float(k[1])
         high = float(k[2])
         low = float(k[3])
         close = float(k[4])
-        comp.update(high, low, close)
+        values = comp.update(high, low, close)
+        if values["ema"] is not None:
+            ema_history_map[symbol_upper].append(float(values["ema"]))
+        low_window_map[symbol_upper].append(low)
+        high_window_map[symbol_upper].append(high)
+        last_close_map[symbol_upper] = close
+        last_rsi_map[symbol_upper] = values["rsi"]
+        _ = open_
     indicator_map[symbol_upper] = comp
     bar_index_map[symbol_upper] = len(klines)
 
 
 def _select_daily_symbols() -> List[str]:
-    symbols = _retry_call(get_top_usdt_symbols_by_quote_volume, 20, 1.0)
+    symbols = _retry_call(get_top_usdt_symbols_by_quote_volume, 100, 1.0)
     return symbols or []
 
 
-def _build_position_state(symbol_upper: str, direction: str, entry_price: float, quantity: float, atr_used: float) -> Dict[str, Any]:
-    if direction == "long":
-        initial_sl = entry_price - (atr_used * INITIAL_SL_ATR_MULT)
-    else:
-        initial_sl = entry_price + (atr_used * INITIAL_SL_ATR_MULT)
+def _build_position_state(
+    symbol_upper: str,
+    direction: str,
+    entry_price: float,
+    quantity: float,
+    atr_used: float,
+    initial_sl: float,
+) -> Dict[str, Any]:
+    r_value = (entry_price - initial_sl) if direction == "long" else (initial_sl - entry_price)
+    if r_value <= 0:
+        r_value = max(atr_used * 0.5, entry_price * 0.001)
     return {
         "symbol": symbol_upper,
         "direction": direction,
@@ -137,6 +159,8 @@ def _build_position_state(symbol_upper: str, direction: str, entry_price: float,
         "trail_sl": float(initial_sl),
         "highest": float(entry_price),
         "lowest": float(entry_price),
+        "trail_active": False,
+        "r_value": float(r_value),
         "opened_at": int(time.time()),
         "server_stop_ok": False,
         "server_stop_order_id": None,
@@ -206,6 +230,7 @@ def _ensure_server_stop_for_position(symbol_upper: str, pos: Dict[str, Any], for
 def _open_trade(symbol_upper: str, signal: Dict[str, Any]) -> None:
     direction = str(signal["direction"])
     atr_used = float(signal["atr_used"])
+    initial_sl = float(signal["initial_sl"])
     entry_mark = latest_price_map.get(symbol_upper)
     if entry_mark is None:
         return
@@ -231,7 +256,11 @@ def _open_trade(symbol_upper: str, signal: Dict[str, Any]) -> None:
     if not res:
         return
     entry_price = float(res["entry_price"])
-    pos_state = _build_position_state(symbol_upper, direction, entry_price, qty, atr_used)
+    if direction == "long" and initial_sl >= entry_price:
+        initial_sl = entry_price - (atr_used * 0.5)
+    if direction == "short" and initial_sl <= entry_price:
+        initial_sl = entry_price + (atr_used * 0.5)
+    pos_state = _build_position_state(symbol_upper, direction, entry_price, qty, atr_used, initial_sl)
     with state_lock:
         active_positions[symbol_upper] = pos_state
         st = load_state()
@@ -263,78 +292,104 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
     if comp is None:
         return
 
+    open_ = float(kline["o"])
     high = float(kline["h"])
     low = float(kline["l"])
     close = float(kline["c"])
     idx = bar_index_map.get(symbol_upper, 0) + 1
     bar_index_map[symbol_upper] = idx
     values = comp.update(high, low, close)
+    if values["ema"] is not None:
+        ema_history_map.setdefault(symbol_upper, deque(maxlen=6)).append(float(values["ema"]))
+    low_window_map.setdefault(symbol_upper, deque(maxlen=10)).append(low)
+    high_window_map.setdefault(symbol_upper, deque(maxlen=10)).append(high)
+    prev_close = last_close_map.get(symbol_upper)
+    prev_rsi = last_rsi_map.get(symbol_upper)
+    ema_hist = ema_history_map.get(symbol_upper)
+    ema_5 = None
+    if ema_hist and len(ema_hist) >= 6:
+        ema_5 = list(ema_hist)[0]
+    last_close_map[symbol_upper] = close
+    last_rsi_map[symbol_upper] = values["rsi"]
 
-    # 이미 포지션을 잡은 코인에 대해서는
-    # 진입 감지/진입 스킵 알림을 보내면 안 됩니다.
-    # (주문 진입은 아래에서도 막고 있지만, 알림 로직은 별도로 계속 도는 구조였습니다.)
     with state_lock:
         if symbol_upper in active_positions:
-            candidate_map.pop(symbol_upper, None)
+            signal_state_map.pop(symbol_upper, None)
             return
 
-    prev_candidate = candidate_map.get(symbol_upper)
-    signal, next_candidate = decide_entry_signal(
+    prev_state = signal_state_map.get(symbol_upper)
+    signal, next_state, event = decide_entry_signal(
         symbol_upper=symbol_upper,
+        open_price=open_,
+        high_price=high,
+        low_price=low,
         close_price=close,
         ema=values["ema"],
+        ema_5=ema_5,
         atr=values["atr"],
         rsi=values["rsi"],
+        prev_rsi=prev_rsi,
         adx=values["adx"],
-        candidate=prev_candidate,
+        state=prev_state,
         bar_index=idx,
+        prev_close=prev_close,
     )
 
-    if next_candidate:
-        # "진입 감지"는 대기중이면 1회만 보내고, 방향이 바뀔 때만 다시 보냄(스팸 방지).
-        prev_direction = str(prev_candidate.get("direction", "")).lower() if prev_candidate else ""
-        next_direction = str(next_candidate.get("direction", "")).lower()
-        candidate_map[symbol_upper] = next_candidate
-        should_notify = (prev_candidate is None) or (prev_direction != next_direction)
-        if should_notify:
-            direction = str(next_candidate["direction"]).upper()
-            basis_close = float(next_candidate["basis_close"])
-            tg.send_message(
-                f"👀📌 진입 감지\n"
-                f"코인: #{symbol_upper}\n"
-                f"방향: {direction}\n"
-                f"기준종가: {_fmt_price(basis_close)}\n"
-                f"조건: EMA+RSI+ADX 통과\n"
-                    f"다음: 확인 캔들(5캔들) 대기\n\n"
-                f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
-            )
+    if next_state:
+        signal_state_map[symbol_upper] = next_state
     else:
-        # If a previous basis existed but expired, send "entry skip".
-        if prev_candidate and "basis_bar" in prev_candidate:
-            expired = (idx - int(prev_candidate["basis_bar"])) > CONFIRM_WITHIN_BARS
-            if expired:
-                direction = str(prev_candidate["direction"]).upper()
-                basis_close = float(prev_candidate["basis_close"])
-                tg.send_message(
-                    f"⛔ 진입 스킵\n"
-                    f"코인: #{symbol_upper}\n"
-                    f"방향: {direction}\n"
-                    f"기준종가: {_fmt_price(basis_close)}\n"
-                    f"사유: 확인 캔들 만료(5캔들)\n\n"
-                    f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
-                )
+        signal_state_map.pop(symbol_upper, None)
 
-        if symbol_upper in candidate_map:
-            candidate_map.pop(symbol_upper, None)
+    if event == "BREAKOUT":
+        logger.info(
+            "[%s] BREAKOUT symbol=%s price=%.6f phase=BREAKOUT",
+            datetime.now(timezone.utc).isoformat(),
+            symbol_upper,
+            close,
+        )
+    elif event == "PULLBACK":
+        logger.info(
+            "[%s] PULLBACK symbol=%s price=%.6f phase=PULLBACK",
+            datetime.now(timezone.utc).isoformat(),
+            symbol_upper,
+            close,
+        )
+    elif event == "STATE_RESET":
+        logger.info(
+            "[%s] STATE_RESET symbol=%s price=%.6f phase=IDLE",
+            datetime.now(timezone.utc).isoformat(),
+            symbol_upper,
+            close,
+        )
 
     if not signal:
         return
+
+    atr_used = float(signal["atr_used"])
+    direction = str(signal["direction"])
+    if direction == "long":
+        lows = list(low_window_map.get(symbol_upper, deque(maxlen=10)))
+        swing_low = min(lows[-10:]) if lows else low
+        initial_sl = swing_low - (atr_used * 0.5)
+    else:
+        highs = list(high_window_map.get(symbol_upper, deque(maxlen=10)))
+        swing_high = max(highs[-10:]) if highs else high
+        initial_sl = swing_high + (atr_used * 0.5)
+    signal["initial_sl"] = initial_sl
 
     with state_lock:
         if symbol_upper in active_positions:
             return
         if len(active_positions) >= MAX_CONCURRENT_POSITIONS:
             return
+
+    logger.info(
+        "[%s] %s symbol=%s price=%.6f",
+        datetime.now(timezone.utc).isoformat(),
+        str(signal.get("reason", "ENTRY")),
+        symbol_upper,
+        close,
+    )
     _open_trade(symbol_upper, signal)
 
 
@@ -377,9 +432,13 @@ def monitor_positions_loop() -> None:
                 atr_used = float(pos["atr_used"])
                 if direction == "long":
                     pos["highest"] = max(float(pos["highest"]), mark)
-                    trail = pos["highest"] - (atr_used * TRAILING_ATR_MULT)
-                    pos["trail_sl"] = max(float(pos["trail_sl"]), trail)
-                    stop_price = max(float(pos["initial_sl"]), float(pos["trail_sl"]))
+                    if not bool(pos.get("trail_active", False)):
+                        if mark >= (float(pos["entry_price"]) + float(pos.get("r_value", 0.0))):
+                            pos["trail_active"] = True
+                    if bool(pos.get("trail_active", False)):
+                        trail = pos["highest"] - (atr_used * 3.0)
+                        pos["trail_sl"] = max(float(pos["trail_sl"]), trail)
+                    stop_price = max(float(pos["initial_sl"]), float(pos["trail_sl"])) if bool(pos.get("trail_active", False)) else float(pos["initial_sl"])
                     if abs(stop_price - float(pos.get("server_stop_price", 0.0))) > 1e-9:
                         pos["server_stop_price"] = stop_price
                         _ensure_server_stop_for_position(sym, pos, force_replace=True)
@@ -387,9 +446,13 @@ def monitor_positions_loop() -> None:
                         _close_and_cleanup(sym, pos, "SL/TRAIL", mark)
                 else:
                     pos["lowest"] = min(float(pos["lowest"]), mark)
-                    trail = pos["lowest"] + (atr_used * TRAILING_ATR_MULT)
-                    pos["trail_sl"] = min(float(pos["trail_sl"]), trail)
-                    stop_price = min(float(pos["initial_sl"]), float(pos["trail_sl"]))
+                    if not bool(pos.get("trail_active", False)):
+                        if mark <= (float(pos["entry_price"]) - float(pos.get("r_value", 0.0))):
+                            pos["trail_active"] = True
+                    if bool(pos.get("trail_active", False)):
+                        trail = pos["lowest"] + (atr_used * 3.0)
+                        pos["trail_sl"] = min(float(pos["trail_sl"]), trail)
+                    stop_price = min(float(pos["initial_sl"]), float(pos["trail_sl"])) if bool(pos.get("trail_active", False)) else float(pos["initial_sl"])
                     if abs(stop_price - float(pos.get("server_stop_price", 0.0))) > 1e-9:
                         pos["server_stop_price"] = stop_price
                         _ensure_server_stop_for_position(sym, pos, force_replace=True)
@@ -616,7 +679,7 @@ def main() -> None:
 
     tg.send_message(
         f"🚀 봇 시작\n"
-        f"전략: A (EMA200 + ATR + ADX)\n"
+        f"전략: Breakout->Pullback->Rebreak (+Chase)\n"
         f"대상 코인: {len(symbols)}개\n"
         f"초기 500봉 로딩 완료"
     )

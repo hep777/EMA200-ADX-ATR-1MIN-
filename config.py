@@ -83,6 +83,7 @@ ADX_MIN = _get_env_float("ADX_MIN", 25.0)
 RSI_LONG_MIN = _get_env_float("RSI_LONG_MIN", 60.0)
 RSI_SHORT_MAX = _get_env_float("RSI_SHORT_MAX", 32.0)
 ATR_SPIKE_CAP_MULT = _get_env_float("ATR_SPIKE_CAP_MULT", 1.8)
+EMA_SLOPE_MIN_PCT = _get_env_float("EMA_SLOPE_MIN_PCT", 0.001)
 
 # Default ATR floor (for symbols not listed in ATR_MIN_BY_SYMBOL)
 DEFAULT_ATR_MIN = _get_env_float("DEFAULT_ATR_MIN", 0.0)
