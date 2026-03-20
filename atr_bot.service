@@ -1,5 +1,5 @@
 [Unit]
-Description=ATR (5m) Trading Bot - Binance USDT Perps
+Description=A-Strategy 1m Trading Bot - Binance USDT Perps
 After=network-online.target
 Wants=network-online.target
 

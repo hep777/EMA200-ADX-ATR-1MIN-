@@ -12,7 +12,9 @@ from config import (
     BINANCE_API_KEY,
     BINANCE_API_SECRET,
     DESIRED_LEVERAGE,
+    DEFAULT_LEVERAGE,
     EXCLUDE_SYMBOLS,
+    LEVERAGE_BY_SYMBOL,
 )
 
 
@@ -91,6 +93,44 @@ def get_all_usdt_futures_symbols() -> List[str]:
     return symbols
 
 
+def get_top_usdt_symbols_by_quote_volume(limit: int = 20, min_last_price: float = 1.0) -> List[str]:
+    """
+    Returns symbol list in lower-case (e.g. btcusdt).
+    """
+    info_resp = requests.get(f"{BASE_URL}/fapi/v1/exchangeInfo", timeout=10)
+    info_data = info_resp.json()
+    tradable = set()
+    for s in info_data.get("symbols", []):
+        if s.get("quoteAsset") != "USDT":
+            continue
+        if s.get("contractType") != "PERPETUAL":
+            continue
+        if s.get("status") != "TRADING":
+            continue
+        sym = s.get("symbol", "")
+        if sym and sym not in EXCLUDE_SYMBOLS:
+            tradable.add(sym)
+
+    tick_resp = requests.get(f"{BASE_URL}/fapi/v1/ticker/24hr", timeout=10)
+    tick_data = tick_resp.json()
+    rows = []
+    for row in tick_data:
+        sym = row.get("symbol", "")
+        if sym not in tradable:
+            continue
+        try:
+            last_price = float(row.get("lastPrice", 0))
+            qv = float(row.get("quoteVolume", 0))
+        except Exception:
+            continue
+        if last_price < min_last_price:
+            continue
+        rows.append((sym, qv))
+
+    rows.sort(key=lambda x: x[1], reverse=True)
+    return [sym.lower() for sym, _ in rows[:limit]]
+
+
 def get_symbol_info(symbol: str) -> Optional[Dict[str, Any]]:
     # Note: symbol must be like "BTCUSDT"
     resp = requests.get(f"{BASE_URL}/fapi/v1/exchangeInfo", timeout=10)
@@ -130,17 +170,18 @@ def set_isolated_and_leverage(symbol: str) -> Optional[int]:
     Returns actual leverage if set successfully, else None.
     We enforce "ISOLATED 7x fixed" by skipping symbols where 7x isn't allowed.
     """
+    desired = LEVERAGE_BY_SYMBOL.get(symbol, DEFAULT_LEVERAGE)
     max_lev = get_max_leverage(symbol)
-    if max_lev < DESIRED_LEVERAGE:
-        logger.warning(f"{symbol} max leverage {max_lev} < desired {DESIRED_LEVERAGE}. Skip.")
+    if max_lev < desired:
+        logger.warning(f"{symbol} max leverage {max_lev} < desired {desired}. Skip.")
         return None
 
     _request("POST", "/fapi/v1/marginType", {"symbol": symbol, "marginType": "ISOLATED"})
-    result = _request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": DESIRED_LEVERAGE})
+    result = _request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": desired})
     if result is None:
         logger.error(f"Failed to set leverage for {symbol}")
         return None
-    return DESIRED_LEVERAGE
+    return desired
 
 
 def get_mark_price(symbol: str) -> float:
@@ -210,17 +251,39 @@ def calculate_quantity(symbol: str, margin_usdt: float, mark_price: float, lever
     return float(qty), int(info["price_precision"])
 
 
-def open_position_market(symbol_lower: str, direction: str, margin_usdt: float) -> Optional[Dict[str, Any]]:
+def calculate_quantity_by_risk(symbol: str, risk_usdt: float, stop_distance: float) -> Optional[Tuple[float, int]]:
+    info = get_symbol_info(symbol)
+    if not info:
+        logger.error(f"{symbol} symbol info not found")
+        return None
+    if stop_distance <= 0:
+        return None
+
+    raw_qty = risk_usdt / stop_distance
+    qty = round(raw_qty, info["qty_precision"])
+    if qty <= 0:
+        return None
+    if qty < info["min_qty"]:
+        return None
+    return float(qty), int(info["price_precision"])
+
+
+def open_position_market(symbol_lower: str, direction: str, quantity: float) -> Optional[Dict[str, Any]]:
     symbol = symbol_lower.upper()
     leverage = set_isolated_and_leverage(symbol)
     if leverage is None:
         return None
 
     mark_price = get_mark_price(symbol)
-    result = calculate_quantity(symbol, margin_usdt, mark_price, leverage)
-    if result is None:
+    info = get_symbol_info(symbol)
+    if not info:
         return None
-    qty, price_precision = result
+    qty = round(quantity, info["qty_precision"])
+    if qty <= 0:
+        return None
+    if qty < info["min_qty"]:
+        return None
+    price_precision = int(info["price_precision"])
 
     side = "BUY" if direction == "long" else "SELL"
     order = _request(
@@ -270,4 +333,44 @@ def close_position_market(symbol_lower: str, direction: str, quantity: float) ->
         },
     )
     return order
+
+
+def place_reduce_only_stop_market(symbol: str, direction: str, stop_price: float) -> Optional[Dict[str, Any]]:
+    side = "SELL" if direction == "long" else "BUY"
+    return _request(
+        "POST",
+        "/fapi/v1/order",
+        {
+            "symbol": symbol,
+            "side": side,
+            "type": "STOP_MARKET",
+            "stopPrice": round(stop_price, 8),
+            "reduceOnly": "true",
+            "workingType": "MARK_PRICE",
+            "closePosition": "true",
+        },
+    )
+
+
+def get_open_orders(symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+    params: Dict[str, Any] = {}
+    if symbol:
+        params["symbol"] = symbol
+    data = _request("GET", "/fapi/v1/openOrders", params=params)
+    if not data:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def cancel_all_open_orders(symbol: str) -> Optional[List[Dict[str, Any]]]:
+    data = _request("DELETE", "/fapi/v1/allOpenOrders", {"symbol": symbol})
+    if data is None:
+        return None
+    if isinstance(data, list):
+        return data
+    return [data]
+
+
+def cancel_order(symbol: str, order_id: int) -> Optional[Dict[str, Any]]:
+    return _request("DELETE", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
 

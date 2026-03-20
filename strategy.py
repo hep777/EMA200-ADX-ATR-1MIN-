@@ -1,71 +1,85 @@
-from typing import Optional
+from typing import Dict, Optional
 
 from config import (
-    BODY_MOVE_PCT,
-    TAIL_MIN_BODY_PCT,
-    TAIL_RATIO,
-    RSI_EXTREME_SHORT,
-    RSI_EXTREME_LONG,
-    RSI_LONG,
-    RSI_SHORT,
-    RSI_PERIOD,
+    ADX_MIN,
+    ATR_MIN_BY_SYMBOL,
+    ATR_SPIKE_CAP_MULT,
+    CONFIRM_WITHIN_BARS,
+    DEFAULT_ATR_MIN,
+    EMA_ATR_OFFSET_MULT,
 )
 
 
-def decide_entry_direction(
-    open_price: float,
-    high_price: float,
-    low_price: float,
+def _atr_floor(symbol_upper: str) -> float:
+    return ATR_MIN_BY_SYMBOL.get(symbol_upper, DEFAULT_ATR_MIN)
+
+
+def decide_entry_signal(
+    symbol_upper: str,
     close_price: float,
-    rsi: Optional[float],
-) -> Optional[str]:
+    ema: Optional[float],
+    atr: Optional[float],
+    atr_ma30: Optional[float],
+    adx: Optional[float],
+    candidate: Optional[Dict[str, float | int | str]],
+    bar_index: int,
+) -> tuple[Optional[Dict[str, float | str]], Optional[Dict[str, float | int | str]]]:
     """
-    Returns: "long" / "short" / None
-
-    Priority:
-      1) RSI extreme: RSI >= 90 => short, RSI <= 12 => long
-      2) Tail exception: tail/body >= 0.7 (only if body% >= 0.2%)
-      3) Default: body +/-1.5% + RSI 70/32
+    A strategy:
+      1) Basis candle: close crosses EMA +/- ATR*k and passes ATR/ADX filters
+      2) Confirmation: within N bars after basis, close breaks basis close.
     """
-    if rsi is None:
-        return None
+    if ema is None or atr is None or adx is None:
+        return None, candidate
 
-    # 1) RSI extreme exception
-    if rsi >= RSI_EXTREME_SHORT:
-        return "short"
-    if rsi <= RSI_EXTREME_LONG:
-        return "long"
+    atr_used = atr
+    if atr_ma30 is not None:
+        atr_used = min(atr, atr_ma30 * ATR_SPIKE_CAP_MULT)
 
-    # body metrics (use open as denominator for %)
-    if open_price == 0:
-        return None
+    if atr_used < _atr_floor(symbol_upper):
+        return None, candidate
+    if adx <= ADX_MIN:
+        return None, candidate
 
-    body = abs(close_price - open_price)
-    if body == 0:
-        body_pct = 0.0
-    else:
-        body_pct = body / open_price
+    long_basis = close_price >= (ema + atr_used * EMA_ATR_OFFSET_MULT)
+    short_basis = close_price <= (ema - atr_used * EMA_ATR_OFFSET_MULT)
 
-    # 2) Tail exception
-    if body_pct >= TAIL_MIN_BODY_PCT and body > 0:
-        upper_tail = high_price - max(open_price, close_price)
-        lower_tail = min(open_price, close_price) - low_price
+    # Refresh basis when a new one appears.
+    if long_basis:
+        candidate = {"direction": "long", "basis_close": close_price, "basis_bar": bar_index, "atr_used": atr_used}
+    elif short_basis:
+        candidate = {"direction": "short", "basis_close": close_price, "basis_bar": bar_index, "atr_used": atr_used}
 
-        upper_ok = (upper_tail / body) >= TAIL_RATIO
-        lower_ok = (lower_tail / body) >= TAIL_RATIO
+    if not candidate:
+        return None, None
 
-        if upper_ok or lower_ok:
-            # If both somehow happen, choose the larger tail.
-            if upper_tail >= lower_tail:
-                return "short"
-            return "long"
+    basis_bar = int(candidate["basis_bar"])
+    if bar_index - basis_bar > CONFIRM_WITHIN_BARS:
+        return None, None
 
-    # 3) Default condition
-    body_move_pct = (close_price - open_price) / open_price
-    if body_move_pct >= BODY_MOVE_PCT and rsi >= RSI_LONG:
-        return "long"
-    if body_move_pct <= -BODY_MOVE_PCT and rsi <= RSI_SHORT:
-        return "short"
+    direction = str(candidate["direction"])
+    basis_close = float(candidate["basis_close"])
 
-    return None
+    if direction == "long" and close_price > basis_close:
+        return (
+            {
+                "direction": "long",
+                "reason": "A_LONG_CONFIRM",
+                "atr_used": float(candidate["atr_used"]),
+                "basis_close": basis_close,
+            },
+            None,
+        )
+    if direction == "short" and close_price < basis_close:
+        return (
+            {
+                "direction": "short",
+                "reason": "A_SHORT_CONFIRM",
+                "atr_used": float(candidate["atr_used"]),
+                "basis_close": basis_close,
+            },
+            None,
+        )
+
+    return None, candidate
 

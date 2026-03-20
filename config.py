@@ -41,52 +41,58 @@ def validate_secrets() -> None:
 
 
 # ─────────────────────────────────────────────
-# Strategy constants
+# Strategy constants (A strategy)
 # ─────────────────────────────────────────────
 
-RSI_PERIOD = 14
-
-# 1m candle body threshold
-BODY_MOVE_PCT = 0.015  # +/- 1.5%
-
-# Tail exception (priority #2)
-TAIL_MIN_BODY_PCT = 0.002  # body must be at least 0.2% for tail-exception to apply
-TAIL_RATIO = 0.7  # tail / body >= 0.7
-
-# RSI extreme exception (priority #1)
-RSI_EXTREME_SHORT = 90  # RSI >= 90 => short
-RSI_EXTREME_LONG = 12  # RSI <= 12 => long
-
-# Default RSI (priority #3)
-RSI_LONG = 70  # RSI >= 70
-RSI_SHORT = 32  # RSI <= 32
-
-
-# ATR-based exits (priority: maximize holding)
-ATR_INTERVAL = os.getenv("ATR_INTERVAL", "5m")
+EMA_PERIOD = _get_env_int("EMA_PERIOD", 200)
 ATR_PERIOD = _get_env_int("ATR_PERIOD", 14)
+ADX_PERIOD = _get_env_int("ADX_PERIOD", 14)
 
-# Recommended from earlier discussion
-SL_ATR_MULT = _get_env_float("SL_ATR_MULT", 2.0)  # fixed stop distance at entry
+# Basis candle threshold: close >= EMA + ATR*k (long), close <= EMA - ATR*k (short)
+EMA_ATR_OFFSET_MULT = _get_env_float("EMA_ATR_OFFSET_MULT", 0.9)
 
-# Trailing: activate after profit >= ATR * TRAIL_ACT_MULT, then trail at ATR * TRAIL_DIST_MULT
-TRAIL_ACT_ATR_MULT = _get_env_float("TRAIL_ACT_ATR_MULT", 1.2)
-TRAIL_DIST_ATR_MULT = _get_env_float("TRAIL_DIST_ATR_MULT", 3.0)
+# Confirmation must happen within N closed candles after basis.
+CONFIRM_WITHIN_BARS = _get_env_int("CONFIRM_WITHIN_BARS", 5)
 
-# Optional clamp so SL doesn't become too tight in low-volatility regimes.
-SL_MIN_DIST_PCT = _get_env_float("SL_MIN_DIST_PCT", 0.0035)  # 0.35%
+# Filters
+ADX_MIN = _get_env_float("ADX_MIN", 21.0)
+ATR_SPIKE_CAP_MULT = _get_env_float("ATR_SPIKE_CAP_MULT", 1.8)
+
+# Default ATR floor (for symbols not listed in ATR_MIN_BY_SYMBOL)
+DEFAULT_ATR_MIN = _get_env_float("DEFAULT_ATR_MIN", 0.0)
+
+# Symbol specific ATR floors
+ATR_MIN_BY_SYMBOL = {
+    "BTCUSDT": _get_env_float("ATR_MIN_BTCUSDT", 130.0),
+    "ETHUSDT": _get_env_float("ATR_MIN_ETHUSDT", 40.0),
+    "SOLUSDT": _get_env_float("ATR_MIN_SOLUSDT", 1.8),
+    "XRPUSDT": _get_env_float("ATR_MIN_XRPUSDT", 0.04),
+}
+
+# Stops / trailing
+INITIAL_SL_ATR_MULT = _get_env_float("INITIAL_SL_ATR_MULT", 1.5)
+TRAILING_ATR_MULT = _get_env_float("TRAILING_ATR_MULT", 3.0)
 
 
 # ─────────────────────────────────────────────
 # Risk / execution
 # ─────────────────────────────────────────────
 
-MAX_CONCURRENT_POSITIONS = _get_env_int("MAX_CONCURRENT_POSITIONS", 10)
+MAX_CONCURRENT_POSITIONS = _get_env_int("MAX_CONCURRENT_POSITIONS", 20)
 
-# Invest 1.5% of current equity as isolated margin per position
-POSITION_MARGIN_PCT = _get_env_float("POSITION_MARGIN_PCT", 0.015)
+# Risk 1% of available balance per trade
+POSITION_RISK_PCT = _get_env_float("POSITION_RISK_PCT", 0.01)
 
-DESIRED_LEVERAGE = _get_env_int("DESIRED_LEVERAGE", 7)
+# Per-symbol leverage policy
+DEFAULT_LEVERAGE = _get_env_int("DEFAULT_LEVERAGE", 10)
+LEVERAGE_BY_SYMBOL = {
+    "BTCUSDT": _get_env_int("LEVERAGE_BTCUSDT", 20),
+    "ETHUSDT": _get_env_int("LEVERAGE_ETHUSDT", 15),
+    "SOLUSDT": _get_env_int("LEVERAGE_SOLUSDT", 15),
+    "XRPUSDT": _get_env_int("LEVERAGE_XRPUSDT", 15),
+}
+
+DESIRED_LEVERAGE = DEFAULT_LEVERAGE
 MARGIN_TYPE = "ISOLATED"
 
 # Skip symbols (optional)

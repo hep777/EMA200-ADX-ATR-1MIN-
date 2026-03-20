@@ -40,7 +40,27 @@ sudo journalctl -u atr_bot.service -f --no-pager
 ## 운영 명령어(텔레그램)
 - `/status` : 현재 상태
 - `/stop` : 신규 진입 중지(기존 포지션은 유지)
-- `/resume` : 신규 진입 재개
+- `/restart` : 신규 진입 재개
 - `/closeall` : 모든 포지션 시장가 청산 + 로컬 상태 초기화
-- `/restart` : 봇 프로세스 재시작
+
+## 실거래 전 점검 체크리스트
+1) API 키 권한 확인
+- Futures 거래 권한 ON
+- IP 화이트리스트 사용 권장
+
+2) 최소 수량/리스크 확인
+- 소액으로 1회 진입/청산 테스트
+- `/status`에서 포지션/봇상태 정상 확인
+
+3) 보호주문 확인
+- 진입 직후 Binance 주문 탭에서 `STOP_MARKET`(reduceOnly, closePosition) 생성 확인
+- 봇 재시작 후 보호주문이 유지/복구되는지 확인
+
+4) CLOSEALL 동작 확인
+- 미체결 주문 취소 후 전체 시장가 청산되는지 확인
+- 청산 완료 후 포지션 0 확인
+
+5) 운영 모니터링
+- `journalctl -u atr_bot.service -f --no-pager`
+- 텔레그램 연결 끊김/재연결 알림 수신 확인
 

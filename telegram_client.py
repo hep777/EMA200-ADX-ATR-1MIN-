@@ -84,9 +84,9 @@ def _poll_loop() -> None:
                         "❓ Unknown command\n\n"
                         "/status — status\n"
                         "/stop — stop new entries\n"
-                        "/resume — resume new entries\n"
+                        "/restart — resume new entries\n"
                         "/closeall — close all positions\n"
-                        "/restart — restart bot"
+                        "(restart process는 서버에서 수동 재시작)"
                     )
                     continue
 
@@ -110,17 +110,37 @@ def alert_bot_status(message: str) -> None:
     send_message(f"🤖 <b>BOT STATUS</b>\n{message}")
 
 
-def alert_entry(symbol_upper: str, direction: str, entry_price: float, sl_price: float) -> None:
+def alert_entry(
+    symbol_upper: str,
+    direction: str,
+    entry_price: float,
+    tp_price: float,
+    sl_price: float,
+    reason: str,
+    rsi: float,
+    body_move_pct: float,
+) -> None:
+    reason_map = {
+        "SIMPLE_LONG": "기본 롱 (바디+RSI)",
+        "SIMPLE_SHORT": "기본 숏 (바디+RSI)",
+    }
+    reason_text = reason_map.get(reason, reason)
+    side_emoji = "📈" if direction == "long" else "📉"
     send_message(
-        f"🟢 <b>ENTRY</b>\n"
-        f"{symbol_upper} {direction.upper()}\n"
-        f"Entry: {entry_price}\n"
-        f"SL: {sl_price}"
+        f"🟢 <b>ENTRY OPEN</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"{side_emoji} <b>{symbol_upper}</b>  {direction.upper()}\n"
+        f"사유: <b>{reason_text}</b>\n"
+        f"RSI: <b>{rsi:.2f}</b>\n"
+        f"바디변화: <b>{body_move_pct*100:+.2f}%</b>\n"
+        f"진입가: <b>{entry_price:.8f}</b>\n"
+        f"익절가(TP): <b>{tp_price:.8f}</b>\n"
+        f"현재손절: <b>{sl_price:.8f}</b>"
     )
 
 
 def alert_exit(symbol_upper: str, direction: str, reason: str, entry_price: float, exit_price: float, pnl_pct: float) -> None:
-    emoji = "💰" if reason == "TRAIL" else "🔴"
+    emoji = "💰" if reason == "TP" else "🔴"
     send_message(
         f"{emoji} <b>EXIT</b> ({reason})\n"
         f"{symbol_upper} {direction.upper()}\n"
