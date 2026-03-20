@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import websocket
 
 from binance_client import (
+    calculate_quantity,
     calculate_quantity_by_risk,
     cancel_all_open_orders,
     cancel_order,
@@ -21,10 +22,12 @@ from binance_client import (
     get_top_usdt_symbols_by_quote_volume,
     open_position_market,
     place_reduce_only_stop_market,
+    set_isolated_and_leverage,
 )
 from config import (
     ATR_PERIOD,
     CONFIRM_WITHIN_BARS,
+    ENABLE_SERVER_STOP,
     INITIAL_SL_ATR_MULT,
     LOCK_FILE,
     LOG_FILE,
@@ -151,6 +154,15 @@ def _fmt_price(value: float) -> str:
 
 
 def _ensure_server_stop_for_position(symbol_upper: str, pos: Dict[str, Any], force_replace: bool = False) -> bool:
+    if not ENABLE_SERVER_STOP:
+        return False
+
+    # Some Binance account modes reject STOP orders on /fapi/v1/order
+    # (e.g. -4120). In that case, stop retrying for this position to avoid
+    # error spam and API throttling.
+    if pos.get("server_stop_unsupported"):
+        return False
+
     direction = str(pos["direction"])
     stop_price = float(pos.get("server_stop_price", pos["initial_sl"]))
     existing_stop_order = None
@@ -174,7 +186,10 @@ def _ensure_server_stop_for_position(symbol_upper: str, pos: Dict[str, Any], for
         except Exception:
             pass
 
-    placed = place_reduce_only_stop_market(symbol_upper, direction, stop_price)
+    qty = float(pos.get("quantity", 0.0))
+    if qty <= 0:
+        return False
+    placed = place_reduce_only_stop_market(symbol_upper, direction, stop_price, qty)
     ok = placed is not None
     pos["server_stop_ok"] = ok
     if ok:
@@ -183,6 +198,9 @@ def _ensure_server_stop_for_position(symbol_upper: str, pos: Dict[str, Any], for
         except Exception:
             pos["server_stop_order_id"] = None
         pos["server_stop_price"] = stop_price
+        pos["server_stop_unsupported"] = False
+    else:
+        pos["server_stop_unsupported"] = True
     return ok
 
 
@@ -194,11 +212,21 @@ def _open_trade(symbol_upper: str, signal: Dict[str, Any]) -> None:
         return
     if not entry_mark:
         return
-    stop_distance = atr_used * INITIAL_SL_ATR_MULT
-    risk_usdt = get_account_equity_usdt() * POSITION_RISK_PCT
-    qty_result = calculate_quantity_by_risk(symbol_upper, risk_usdt, stop_distance)
+
+    # POSITION_RISK_PCT is "투입 마진 비율" (equity의 1%만 사용)
+    # => margin_usdt = equity * POSITION_RISK_PCT
+    # => qty is derived from margin_usdt * leverage / mark_price
+    margin_usdt = get_account_equity_usdt() * POSITION_RISK_PCT
+
+    # leverage 기반으로 qty 계산을 위해 먼저 레버리지 세팅/확인을 수행
+    leverage = set_isolated_and_leverage(symbol_upper)
+    if leverage is None:
+        return
+
+    qty_result = calculate_quantity(symbol_upper, margin_usdt, entry_mark, leverage)
     if not qty_result:
         return
+
     qty, _ = qty_result
     res = open_position_market(symbol_upper.lower(), direction, qty)
     if not res:
@@ -243,6 +271,14 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
     idx = bar_index_map.get(symbol_upper, 0) + 1
     bar_index_map[symbol_upper] = idx
     values = comp.update(high, low, close)
+
+    # 이미 포지션을 잡은 코인에 대해서는
+    # 진입 감지/진입 스킵 알림을 보내면 안 됩니다.
+    # (주문 진입은 아래에서도 막고 있지만, 알림 로직은 별도로 계속 도는 구조였습니다.)
+    with state_lock:
+        if symbol_upper in active_positions:
+            candidate_map.pop(symbol_upper, None)
+            return
 
     prev_candidate = candidate_map.get(symbol_upper)
     signal, next_candidate = decide_entry_signal(

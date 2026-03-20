@@ -335,8 +335,28 @@ def close_position_market(symbol_lower: str, direction: str, quantity: float) ->
     return order
 
 
-def place_reduce_only_stop_market(symbol: str, direction: str, stop_price: float) -> Optional[Dict[str, Any]]:
+def place_reduce_only_stop_market(
+    symbol: str, direction: str, stop_price: float, quantity: float
+) -> Optional[Dict[str, Any]]:
     side = "SELL" if direction == "long" else "BUY"
+    # Primary: reduceOnly + quantity (widely compatible)
+    primary = _request(
+        "POST",
+        "/fapi/v1/order",
+        {
+            "symbol": symbol,
+            "side": side,
+            "type": "STOP_MARKET",
+            "stopPrice": round(stop_price, 8),
+            "quantity": quantity,
+            "reduceOnly": "true",
+            "workingType": "MARK_PRICE",
+        },
+    )
+    if primary is not None:
+        return primary
+
+    # Fallback: closePosition mode (some account modes require this)
     return _request(
         "POST",
         "/fapi/v1/order",
@@ -345,7 +365,6 @@ def place_reduce_only_stop_market(symbol: str, direction: str, stop_price: float
             "side": side,
             "type": "STOP_MARKET",
             "stopPrice": round(stop_price, 8),
-            "reduceOnly": "true",
             "workingType": "MARK_PRICE",
             "closePosition": "true",
         },

@@ -5,6 +5,10 @@ def _get_env_float(name: str, default: float) -> float:
     v = os.getenv(name)
     if v is None or v == "":
         return default
+    v = v.strip()
+    # allow quoting like BINANCE_API_KEY="xxxx" (for robustness)
+    if len(v) >= 2 and ((v[0] == v[-1]) and v[0] in ("'", '"')):
+        v = v[1:-1].strip()
     return float(v)
 
 
@@ -12,6 +16,9 @@ def _get_env_int(name: str, default: int) -> int:
     v = os.getenv(name)
     if v is None or v == "":
         return default
+    v = v.strip()
+    if len(v) >= 2 and ((v[0] == v[-1]) and v[0] in ("'", '"')):
+        v = v[1:-1].strip()
     return int(v)
 
 
@@ -19,7 +26,24 @@ def _get_env_str(name: str, default: str = "") -> str:
     v = os.getenv(name)
     if v is None:
         return default
+    v = v.strip()
+    # .env values sometimes get written as BINANCE_API_KEY="xxxxx"
+    # If we don't strip quotes, Binance returns "API-key format invalid (401)".
+    if len(v) >= 2 and ((v[0] == v[-1]) and v[0] in ("'", '"')):
+        v = v[1:-1].strip()
     return v
+
+
+def _get_env_bool(name: str, default: bool) -> bool:
+    v = os.getenv(name)
+    if v is None or v == "":
+        return default
+    s = v.strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off"):
+        return False
+    return default
 
 
 # ─────────────────────────────────────────────
@@ -61,13 +85,9 @@ ATR_SPIKE_CAP_MULT = _get_env_float("ATR_SPIKE_CAP_MULT", 1.8)
 # Default ATR floor (for symbols not listed in ATR_MIN_BY_SYMBOL)
 DEFAULT_ATR_MIN = _get_env_float("DEFAULT_ATR_MIN", 0.0)
 
-# Symbol specific ATR floors
-ATR_MIN_BY_SYMBOL = {
-    "BTCUSDT": _get_env_float("ATR_MIN_BTCUSDT", 130.0),
-    "ETHUSDT": _get_env_float("ATR_MIN_ETHUSDT", 40.0),
-    "SOLUSDT": _get_env_float("ATR_MIN_SOLUSDT", 1.8),
-    "XRPUSDT": _get_env_float("ATR_MIN_XRPUSDT", 0.04),
-}
+# ATR floor: 코인별로 다르게 두지 않음
+# (요청하신 대로 BTC/ETH/SOL/XRP도 다른 코인처럼 동일하게 처리)
+ATR_MIN_BY_SYMBOL = {}
 
 # Stops / trailing
 INITIAL_SL_ATR_MULT = _get_env_float("INITIAL_SL_ATR_MULT", 1.5)
@@ -113,4 +133,8 @@ STREAM_BATCH_SIZE = _get_env_int("STREAM_BATCH_SIZE", 200)
 LOCK_FILE = os.getenv("LOCK_FILE", "/tmp/atr_bot.lock")
 STATE_FILE = os.getenv("STATE_FILE", "state.json")
 LOG_FILE = os.getenv("LOG_FILE", "bot.log")
+
+# Binance 계정/모드에서 STOP_MARKET 엔드포인트 미지원(-4120)일 수 있어
+# 기본값은 OFF로 두고 로컬 트레일링 청산만 사용합니다.
+ENABLE_SERVER_STOP = _get_env_bool("ENABLE_SERVER_STOP", False)
 
