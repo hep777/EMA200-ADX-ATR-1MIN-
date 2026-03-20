@@ -5,7 +5,7 @@ import sys
 import threading
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Deque, Dict, List, Optional
 
 import websocket
@@ -55,6 +55,7 @@ active_positions: Dict[str, Dict[str, Any]] = {}
 tracked_symbols: List[str] = []
 last_protection_sync_ts = 0.0
 latest_price_map: Dict[str, float] = {}
+KST = timezone(timedelta(hours=9))
 
 
 def check_single_instance() -> None:
@@ -134,8 +135,34 @@ def _bootstrap_symbol_indicators(symbol_upper: str) -> None:
 
 
 def _select_daily_symbols() -> List[str]:
-    symbols = _retry_call(get_top_usdt_symbols_by_quote_volume, 100, 1.0)
+    # Keep exactly top-100 by quote volume when possible.
+    # min_last_price=0.0 prevents dropping sub-$1 symbols.
+    symbols = _retry_call(get_top_usdt_symbols_by_quote_volume, 100, 0.0)
     return symbols or []
+
+
+def _send_daily_universe_report(symbols: List[str]) -> None:
+    if not symbols:
+        tg.send_message("📋 일일 코인 랭킹(Top100)\n대상 코인 없음")
+        return
+    lines = ["📋 일일 코인 랭킹(거래량 Top100, KST 09:00 기준)"]
+    for i, s in enumerate(symbols[:100], 1):
+        lines.append(f"{i:>3}. {s.upper()}")
+
+    # Telegram message size limit safety.
+    chunk: List[str] = []
+    current_len = 0
+    for line in lines:
+        add_len = len(line) + 1
+        if current_len + add_len > 3500 and chunk:
+            tg.send_message("\n".join(chunk))
+            chunk = [line]
+            current_len = add_len
+        else:
+            chunk.append(line)
+            current_len += add_len
+    if chunk:
+        tg.send_message("\n".join(chunk))
 
 
 def _build_position_state(
@@ -643,14 +670,15 @@ def start_websockets(symbols_lower: List[str]) -> None:
 def daily_symbol_refresh_loop() -> None:
     global tracked_symbols
     while True:
-        now = datetime.now(timezone.utc)
-        if now.hour == 0 and now.minute == 0:
+        now = datetime.now(KST)
+        if now.hour == 9 and now.minute == 0:
             symbols = _select_daily_symbols()
             if symbols:
                 tracked_symbols = symbols
                 for s in symbols:
                     _bootstrap_symbol_indicators(s.upper())
                 tg.send_message(f"🔄 일일 코인 갱신 완료\n대상 코인: {len(symbols)}개")
+                _send_daily_universe_report(symbols)
             time.sleep(70)
         time.sleep(5)
 
