@@ -11,7 +11,6 @@ import websocket
 
 from binance_client import (
     calculate_quantity,
-    calculate_quantity_by_risk,
     cancel_all_open_orders,
     cancel_order,
     close_position_market,
@@ -244,9 +243,8 @@ def _open_trade(symbol_upper: str, signal: Dict[str, Any]) -> None:
         f"{side_icon} 진입\n"
         f"코인: #{symbol_upper}\n"
         f"방향: {direction.upper()}\n"
-        f"진입가: {entry_price:.6f}\n"
-        f"손절가: {float(pos_state['initial_sl']):.6f}\n"
-        f"ATR: {atr_used:.6f}\n\n"
+        f"진입가: {_fmt_price(entry_price)}\n"
+        f"손절가: {_fmt_price(float(pos_state['initial_sl']))}\n\n"
         f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
     )
 
@@ -286,7 +284,7 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
         close_price=close,
         ema=values["ema"],
         atr=values["atr"],
-        atr_ma30=values["atr_ma30"],
+        rsi=values["rsi"],
         adx=values["adx"],
         candidate=prev_candidate,
         bar_index=idx,
@@ -306,7 +304,7 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
                 f"코인: #{symbol_upper}\n"
                 f"방향: {direction}\n"
                 f"기준종가: {_fmt_price(basis_close)}\n"
-                f"조건: EMA+ATR+ADX 통과\n"
+                f"조건: EMA+RSI+ADX 통과\n"
                     f"다음: 확인 캔들(5캔들) 대기\n\n"
                 f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
             )
@@ -357,8 +355,8 @@ def _close_and_cleanup(symbol_upper: str, pos: Dict[str, Any], reason: str, exit
         f"{exit_icon} 청산 ({reason})\n"
         f"코인: #{symbol_upper}\n"
         f"방향: {direction.upper()}\n"
-        f"진입가: {entry:.6f}\n"
-        f"청산가: {exit_price:.6f}\n"
+        f"진입가: {_fmt_price(entry)}\n"
+        f"청산가: {_fmt_price(exit_price)}\n"
         f"손익: {pnl_pct:+.2f}%\n\n"
         f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
     )

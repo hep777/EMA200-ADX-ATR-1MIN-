@@ -79,7 +79,9 @@ EMA_ATR_OFFSET_MULT = _get_env_float("EMA_ATR_OFFSET_MULT", 0.9)
 CONFIRM_WITHIN_BARS = _get_env_int("CONFIRM_WITHIN_BARS", 5)
 
 # Filters
-ADX_MIN = _get_env_float("ADX_MIN", 21.0)
+ADX_MIN = _get_env_float("ADX_MIN", 25.0)
+RSI_LONG_MIN = _get_env_float("RSI_LONG_MIN", 60.0)
+RSI_SHORT_MAX = _get_env_float("RSI_SHORT_MAX", 32.0)
 ATR_SPIKE_CAP_MULT = _get_env_float("ATR_SPIKE_CAP_MULT", 1.8)
 
 # Default ATR floor (for symbols not listed in ATR_MIN_BY_SYMBOL)

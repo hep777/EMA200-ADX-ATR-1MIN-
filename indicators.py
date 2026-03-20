@@ -37,6 +37,15 @@ class TrendIndicatorComputer:
 
         self.atr_window: Deque[float] = deque(maxlen=30)
 
+        # RSI(14) - Wilder smoothing
+        self.rsi_period = 14
+        self._rsi_gain_sum = 0.0
+        self._rsi_loss_sum = 0.0
+        self._rsi_count = 0
+        self._avg_gain: Optional[float] = None
+        self._avg_loss: Optional[float] = None
+        self.rsi: Optional[float] = None
+
     def _true_range(self, high: float, low: float, prev_close: float) -> float:
         return max(high - low, abs(high - prev_close), abs(low - prev_close))
 
@@ -47,7 +56,29 @@ class TrendIndicatorComputer:
             self.prev_low = low
             self._ema_count = 1
             self._ema_sum = close
-            return {"ema": None, "atr": None, "adx": None, "atr_ma30": None}
+            return {"ema": None, "atr": None, "adx": None, "atr_ma30": None, "rsi": None}
+
+        # RSI (Wilder)
+        delta = close - self.prev_close
+        gain = delta if delta > 0 else 0.0
+        loss = -delta if delta < 0 else 0.0
+        if self._avg_gain is None or self._avg_loss is None:
+            self._rsi_count += 1
+            self._rsi_gain_sum += gain
+            self._rsi_loss_sum += loss
+            if self._rsi_count >= self.rsi_period:
+                self._avg_gain = self._rsi_gain_sum / self.rsi_period
+                self._avg_loss = self._rsi_loss_sum / self.rsi_period
+        else:
+            self._avg_gain = ((self._avg_gain * (self.rsi_period - 1)) + gain) / self.rsi_period
+            self._avg_loss = ((self._avg_loss * (self.rsi_period - 1)) + loss) / self.rsi_period
+
+        if self._avg_gain is not None and self._avg_loss is not None:
+            if self._avg_loss == 0:
+                self.rsi = 100.0
+            else:
+                rs = self._avg_gain / self._avg_loss
+                self.rsi = 100.0 - (100.0 / (1.0 + rs))
 
         # EMA
         if self.ema is None:
@@ -114,5 +145,6 @@ class TrendIndicatorComputer:
             "atr": self.atr,
             "adx": self.adx,
             "atr_ma30": atr_ma30,
+            "rsi": self.rsi,
         }
 
