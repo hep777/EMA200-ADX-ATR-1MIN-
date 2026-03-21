@@ -37,7 +37,13 @@ def _headers() -> Dict[str, str]:
     return {"X-MBX-APIKEY": BINANCE_API_KEY}
 
 
-def _request(method: str, endpoint: str, params: Optional[Dict[str, Any]] = None, signed: bool = True) -> Optional[Dict[str, Any]]:
+def _request(
+    method: str,
+    endpoint: str,
+    params: Optional[Dict[str, Any]] = None,
+    signed: bool = True,
+    ignore_binance_error_codes: Optional[Tuple[int, ...]] = None,
+) -> Optional[Dict[str, Any]]:
     url = f"{BASE_URL}{endpoint}"
     if params is None:
         params = {}
@@ -64,6 +70,15 @@ def _request(method: str, endpoint: str, params: Optional[Dict[str, Any]] = None
         return None
 
     if resp.status_code != 200:
+        err_code: Optional[int] = None
+        if isinstance(data, dict):
+            try:
+                err_code = int(data.get("code"))
+            except (TypeError, ValueError):
+                err_code = None
+        if ignore_binance_error_codes and err_code in ignore_binance_error_codes:
+            logger.debug("API %s ignored (code=%s): %s", resp.status_code, err_code, data)
+            return None
         logger.error(f"API error {resp.status_code}: {data}")
         return None
 
@@ -287,7 +302,13 @@ def set_isolated_and_leverage(symbol: str) -> Optional[int]:
         logger.warning(f"{symbol} max leverage {max_lev} < desired {desired}. Skip.")
         return None
 
-    _request("POST", "/fapi/v1/marginType", {"symbol": symbol, "marginType": "ISOLATED"})
+    # -4046: already ISOLATED — not an error
+    _request(
+        "POST",
+        "/fapi/v1/marginType",
+        {"symbol": symbol, "marginType": "ISOLATED"},
+        ignore_binance_error_codes=(-4046,),
+    )
     result = _request("POST", "/fapi/v1/leverage", {"symbol": symbol, "leverage": desired})
     if result is None:
         logger.error(f"Failed to set leverage for {symbol}")
