@@ -301,6 +301,42 @@ def get_mark_price(symbol: str) -> float:
     return float(data["markPrice"])
 
 
+def _order_avg_from_query(symbol: str, order_id: int) -> Optional[float]:
+    """GET /fapi/v1/order — 체결 후 avgPrice 확보."""
+    data = _request("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+    if not data:
+        return None
+    try:
+        ap = float(data.get("avgPrice", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    return ap if ap > 0 else None
+
+
+def _resolve_market_entry_price(symbol: str, order_id: int, order_response: Dict[str, Any], mark_fallback: float) -> float:
+    """
+    시장가 응답에 avgPrice가 0이거나 늦게 채워지는 경우가 있어,
+    주문 조회 반복 후에도 없으면 포지션 entryPrice로 보완 (텔레그램 진입가 = 실제 체결에 가깝게).
+    """
+    try:
+        ap0 = float(order_response.get("avgPrice", 0) or 0)
+    except (TypeError, ValueError):
+        ap0 = 0.0
+    if ap0 > 0:
+        return ap0
+    for _ in range(12):
+        time.sleep(0.12)
+        q = _order_avg_from_query(symbol, order_id)
+        if q is not None:
+            return q
+    for p in get_open_positions():
+        if p.get("symbol") == symbol:
+            ep = float(p.get("entry_price", 0))
+            if ep > 0:
+                return ep
+    return mark_fallback
+
+
 def get_account_equity_usdt() -> float:
     data = _request("GET", "/fapi/v2/balance")
     if not data:
@@ -461,11 +497,11 @@ def open_position_market(symbol_lower: str, direction: str, quantity: float) -> 
         logger.error(f"{symbol} market order failed")
         return None
 
-    order_id = order.get("orderId")
-    entry_price = float(order.get("avgPrice", 0) or 0)
-    if entry_price == 0:
-        # Fallback: mark price (server-side fill price can be tricky via avgPrice=0)
-        entry_price = mark_price
+    order_id_raw = order.get("orderId")
+    if order_id_raw is None:
+        entry_price = float(order.get("avgPrice", 0) or 0) or mark_price
+    else:
+        entry_price = _resolve_market_entry_price(symbol, int(order_id_raw), order, mark_price)
 
     return {
         "symbol": symbol,
@@ -475,7 +511,7 @@ def open_position_market(symbol_lower: str, direction: str, quantity: float) -> 
         "quantity": qty,
         "leverage": leverage,
         "price_precision": price_precision,
-        "order_id": order_id,
+        "order_id": order_id_raw,
     }
 
 
