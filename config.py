@@ -106,13 +106,14 @@ MAX_CONCURRENT_POSITIONS = _get_env_int("MAX_CONCURRENT_POSITIONS", 20)
 # Risk 1% of available balance per trade
 POSITION_RISK_PCT = _get_env_float("POSITION_RISK_PCT", 0.01)
 
-# Per-symbol leverage policy
-DEFAULT_LEVERAGE = _get_env_int("DEFAULT_LEVERAGE", 10)
+# Per-symbol leverage policy (ISOLATED). Unlisted symbols use DEFAULT_LEVERAGE.
+DEFAULT_LEVERAGE = _get_env_int("DEFAULT_LEVERAGE", 5)
 LEVERAGE_BY_SYMBOL = {
-    "BTCUSDT": _get_env_int("LEVERAGE_BTCUSDT", 20),
-    "ETHUSDT": _get_env_int("LEVERAGE_ETHUSDT", 15),
-    "SOLUSDT": _get_env_int("LEVERAGE_SOLUSDT", 15),
-    "XRPUSDT": _get_env_int("LEVERAGE_XRPUSDT", 15),
+    "BTCUSDT": _get_env_int("LEVERAGE_BTCUSDT", 50),
+    "ETHUSDT": _get_env_int("LEVERAGE_ETHUSDT", 30),
+    "XRPUSDT": _get_env_int("LEVERAGE_XRPUSDT", 30),
+    "SOLUSDT": _get_env_int("LEVERAGE_SOLUSDT", 30),
+    "BNBUSDT": _get_env_int("LEVERAGE_BNBUSDT", 30),
 }
 
 DESIRED_LEVERAGE = DEFAULT_LEVERAGE
@@ -123,6 +124,9 @@ EXCLUDE_SYMBOLS = [s.strip().upper() for s in os.getenv("EXCLUDE_SYMBOLS", "").s
 
 # Top N USDT perpetuals by 24h quote volume (watchlist)
 UNIVERSE_TOP_N = _get_env_int("UNIVERSE_TOP_N", 200)
+
+# Pull SL slightly past Binance liquidation toward the safe side (avoid liq before stop)
+LIQ_STOP_BUFFER_PCT = _get_env_float("LIQ_STOP_BUFFER_PCT", 0.002)
 
 
 # ─────────────────────────────────────────────

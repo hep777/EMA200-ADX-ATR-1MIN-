@@ -17,6 +17,8 @@ from binance_client import (
     close_position_market,
     get_account_equity_usdt,
     get_klines,
+    get_liquidation_price,
+    get_liquidation_prices_map,
     get_open_orders,
     get_open_positions,
     get_top_usdt_symbols_by_quote_volume,
@@ -27,6 +29,7 @@ from binance_client import (
 from config import (
     ATR_PERIOD,
     ENABLE_SERVER_STOP,
+    LIQ_STOP_BUFFER_PCT,
     LOCK_FILE,
     LOG_FILE,
     MAX_CONCURRENT_POSITIONS,
@@ -208,6 +211,7 @@ def _normalize_position_stops(pos: Dict[str, Any]) -> None:
     """
     Ensure initial SL is on the correct side of entry (long: below, short: above).
     Fixes swing-based SL when recent highs/lows are on the wrong side of entry.
+    If Binance liquidation price is known, pull SL to the safe side so stop triggers before liquidation.
     """
     direction = str(pos.get("direction", "long"))
     entry = float(pos.get("entry_price", 0.0))
@@ -219,9 +223,37 @@ def _normalize_position_stops(pos: Dict[str, Any]) -> None:
     if direction == "long":
         if sl >= entry:
             sl = entry - min_buf
+    else:
+        if sl <= entry:
+            sl = entry + min_buf
+
+    liq = pos.get("liquidation_price")
+    if liq is not None:
+        try:
+            liq_f = float(liq)
+            if liq_f > 0:
+                buf = float(LIQ_STOP_BUFFER_PCT)
+                if direction == "long":
+                    # Price falls: must hit SL before liq -> SL (numeric) > liq
+                    floor_sl = liq_f * (1.0 + buf)
+                    if sl < floor_sl:
+                        sl = floor_sl
+                else:
+                    # Price rises: SL before liq -> SL (numeric) < liq
+                    cap_sl = liq_f * (1.0 - buf)
+                    if sl > cap_sl:
+                        sl = cap_sl
+        except (TypeError, ValueError):
+            pass
+
+    if direction == "long":
+        if sl >= entry:
+            sl = entry - min_buf
         pos["initial_sl"] = float(sl)
         trail = float(pos.get("trail_sl", sl))
         if trail > entry:
+            trail = sl
+        if trail < sl:
             trail = sl
         pos["trail_sl"] = trail
     else:
@@ -230,6 +262,8 @@ def _normalize_position_stops(pos: Dict[str, Any]) -> None:
         pos["initial_sl"] = float(sl)
         trail = float(pos.get("trail_sl", sl))
         if trail < entry:
+            trail = sl
+        if trail > sl:
             trail = sl
         pos["trail_sl"] = trail
     r_val = (entry - float(pos["initial_sl"])) if direction == "long" else (float(pos["initial_sl"]) - entry)
@@ -349,6 +383,9 @@ def _open_trade(symbol_upper: str, signal: Dict[str, Any]) -> None:
     if direction == "short" and initial_sl <= entry_price:
         initial_sl = entry_price + (atr_used * 0.5)
     pos_state = _build_position_state(symbol_upper, direction, entry_price, qty, atr_used, initial_sl)
+    liq_px = _retry_call(get_liquidation_price, symbol_upper)
+    if liq_px is not None:
+        pos_state["liquidation_price"] = liq_px
     _normalize_position_stops(pos_state)
     pos_state["server_stop_price"] = _effective_stop_price(pos_state)
     with state_lock:
@@ -583,6 +620,12 @@ def monitor_positions_loop() -> None:
         now = time.time()
         if now - _last_exchange_reconcile_ts >= 30:
             _last_exchange_reconcile_ts = now
+            liq_map = get_liquidation_prices_map()
+            with state_lock:
+                for sym, pos in active_positions.items():
+                    if sym in liq_map:
+                        pos["liquidation_price"] = liq_map[sym]
+                        _normalize_position_stops(pos)
             reconcile_positions_with_exchange()
 
         if now - last_protection_sync_ts >= 15:
@@ -605,6 +648,9 @@ def recover_positions() -> None:
         exchange_symbols.add(sym)
         if sym in saved:
             active_positions[sym] = saved[sym]
+            lp = p.get("liquidation_price")
+            if lp:
+                active_positions[sym]["liquidation_price"] = lp
             _normalize_position_stops(active_positions[sym])
             active_positions[sym]["server_stop_price"] = _effective_stop_price(active_positions[sym])
             _ensure_server_stop_for_position(sym, active_positions[sym])
@@ -614,6 +660,9 @@ def recover_positions() -> None:
         qty = float(p["amount"])
         direction = p["direction"]
         active_positions[sym] = _build_position_state(sym, direction, entry, qty, atr_used=entry * 0.003)
+        lp = p.get("liquidation_price")
+        if lp:
+            active_positions[sym]["liquidation_price"] = lp
         _normalize_position_stops(active_positions[sym])
         active_positions[sym]["server_stop_price"] = _effective_stop_price(active_positions[sym])
         _ensure_server_stop_for_position(sym, active_positions[sym])
@@ -626,8 +675,11 @@ def recover_positions() -> None:
 
 def cmd_status() -> None:
     reconcile_positions_with_exchange()
+    liq_map = get_liquidation_prices_map()
     with state_lock:
         for _sym, _pos in list(active_positions.items()):
+            if _sym in liq_map:
+                _pos["liquidation_price"] = liq_map[_sym]
             _normalize_position_stops(_pos)
         positions = dict(active_positions)
         cnt = len(positions)

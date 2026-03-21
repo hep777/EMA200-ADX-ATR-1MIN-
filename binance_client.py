@@ -168,7 +168,7 @@ def get_max_leverage(symbol: str) -> int:
 def set_isolated_and_leverage(symbol: str) -> Optional[int]:
     """
     Returns actual leverage if set successfully, else None.
-    We enforce "ISOLATED 7x fixed" by skipping symbols where 7x isn't allowed.
+    ISOLATED margin; leverage from config (per-symbol map or default). Skips if max bracket < desired.
     """
     desired = LEVERAGE_BY_SYMBOL.get(symbol, DEFAULT_LEVERAGE)
     max_lev = get_max_leverage(symbol)
@@ -209,6 +209,15 @@ def get_open_positions() -> List[Dict[str, Any]]:
         amt = float(p.get("positionAmt", 0))
         if amt == 0:
             continue
+        liq_raw = p.get("liquidationPrice")
+        liq: Optional[float] = None
+        if liq_raw is not None:
+            try:
+                lv = float(liq_raw)
+                if lv > 0:
+                    liq = lv
+            except (TypeError, ValueError):
+                pass
         positions.append(
             {
                 "symbol": p.get("symbol"),
@@ -216,9 +225,50 @@ def get_open_positions() -> List[Dict[str, Any]]:
                 "amount": abs(amt),
                 "entry_price": float(p.get("entryPrice", 0)),
                 "mark_price": float(p.get("markPrice", 0)),
+                "liquidation_price": liq,
             }
         )
     return positions
+
+
+def get_liquidation_price(symbol: str) -> Optional[float]:
+    """Liquidation price for current open position on symbol, if any."""
+    data = _request("GET", "/fapi/v2/positionRisk", {"symbol": symbol.upper()})
+    if not data:
+        return None
+    rows = data if isinstance(data, list) else [data]
+    for p in rows:
+        if p.get("symbol") != symbol.upper():
+            continue
+        if float(p.get("positionAmt", 0)) == 0:
+            return None
+        try:
+            lv = float(p.get("liquidationPrice", 0))
+            return lv if lv > 0 else None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def get_liquidation_prices_map() -> Dict[str, float]:
+    """symbol -> liquidation price for all non-zero positions."""
+    data = _request("GET", "/fapi/v2/positionRisk")
+    out: Dict[str, float] = {}
+    if not data:
+        return out
+    for p in data:
+        if float(p.get("positionAmt", 0)) == 0:
+            continue
+        sym = p.get("symbol")
+        if not sym:
+            continue
+        try:
+            lv = float(p.get("liquidationPrice", 0))
+            if lv > 0:
+                out[str(sym)] = lv
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def get_klines(symbol: str, interval: str, limit: int) -> Optional[List[List[Any]]]:
