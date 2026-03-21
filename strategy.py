@@ -2,7 +2,6 @@ from typing import Dict, Optional
 
 from config import (
     ADX_MIN,
-    EMA_SLOPE_MIN_PCT,
     RSI_LONG_MIN,
     RSI_SHORT_MAX,
     STATE_TIMEOUT_BARS,
@@ -69,21 +68,22 @@ def decide_entry_signal(
     if state and str(state.get("phase", IDLE)) not in (IDLE, BREAKOUT):
         return None, None, "STATE_RESET"
 
+    # EMA / RSI / ADX: 5봉 전 값보다 큰지·작은지만 본다 (0.1% 최소 기울기 없음)
     long_basis = (
         close_price > ema
-        and ema > (ema_5 * (1.0 + EMA_SLOPE_MIN_PCT))
+        and ema > ema_5
         and rsi >= RSI_LONG_MIN
-        and rsi > (rsi_5 * (1.0 + EMA_SLOPE_MIN_PCT))
+        and rsi > rsi_5
         and adx >= ADX_MIN
-        and adx > (adx_5 * (1.0 + EMA_SLOPE_MIN_PCT))
+        and adx > adx_5
     )
     short_basis = (
         close_price < ema
-        and ema < (ema_5 * (1.0 - EMA_SLOPE_MIN_PCT))
+        and ema < ema_5
         and rsi <= RSI_SHORT_MAX
-        and rsi < (rsi_5 * (1.0 - EMA_SLOPE_MIN_PCT))
+        and rsi < rsi_5
         and adx >= ADX_MIN
-        and adx > (adx_5 * (1.0 + EMA_SLOPE_MIN_PCT))
+        and adx > adx_5
     )
 
     phase = str(state.get("phase", IDLE)) if state else IDLE
