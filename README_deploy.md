@@ -26,6 +26,7 @@ nano .env  # BINANCE_API_KEY / BINANCE_API_SECRET / TELEGRAM_BOT_TOKEN / TELEGRA
 
 추가 전략 튜닝 값:
 - `EMA_SLOPE_MIN_PCT` : EMA200의 5봉 기울기 최소 비율 (기본 `0.001` = 0.1%)
+- `STATE_TIMEOUT_BARS` : 기준봉 이후 `BREAKOUT`/`PULLBACK` 상태 유지 최대 봉 수(초과 시 `STATE_RESET`). 기본 `7` (옛 기본 `5`)
 
 ### 4) systemd 서비스 등록
 ```sh
@@ -39,6 +40,38 @@ sudo systemctl restart atr_bot.service
 ```sh
 sudo journalctl -u atr_bot.service -f --no-pager
 ```
+
+### 6) GitHub에 올린 뒤 Vultr에 반영하기 (초보자용)
+
+**한 줄 요약:** PC에서 `git push` → 서버에서 `git pull` → 봇 재시작. 텔레그램 토큰은 그대로 `.env`에 있으면 추가 작업 없음.
+
+1. **로컬(PC)** 에서 변경사항 커밋 후 GitHub에 푸시  
+   (이미 푸시돼 있으면 생략)
+
+2. **Vultr 서버 SSH 접속** (Windows는 PowerShell 또는 PuTTY)
+   ```sh
+   ssh 사용자이름@서버IP
+   ```
+
+3. **봇 폴더로 이동 후 최신 코드 받기**
+   ```sh
+   cd /opt/atr_bot
+   git pull
+   ```
+   - `.env`는 Git에 안 올라가므로 **API 키·텔레그램은 서버의 `.env` 그대로** 유지됩니다.
+
+4. **서비스 재시작** (코드 반영)
+   ```sh
+   sudo systemctl restart atr_bot.service
+   ```
+
+5. **정상 동작 확인**
+   ```sh
+   sudo journalctl -u atr_bot.service -n 50 --no-pager
+   ```
+   에러 없이 기동되면 OK.
+
+**텔레그램:** 봇이 재시작되면 기존과 같이 알림이 갑니다. 토큰/채팅 ID를 바꾼 게 아니면 **별도 “텔레그램 적용” 설정은 없음** (재시작만 하면 됨).
 
 ## 운영 명령어(텔레그램)
 - `/status` : 현재 상태

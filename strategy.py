@@ -1,12 +1,10 @@
 from typing import Dict, Optional
 
-from config import ADX_MIN, EMA_SLOPE_MIN_PCT
+from config import ADX_MIN, EMA_SLOPE_MIN_PCT, STATE_TIMEOUT_BARS
 
 IDLE = "IDLE"
 BREAKOUT = "BREAKOUT"
 PULLBACK = "PULLBACK"
-
-STATE_TIMEOUT_BARS = 5
 
 
 def _build_breakout_state(

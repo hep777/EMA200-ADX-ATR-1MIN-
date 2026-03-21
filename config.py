@@ -78,6 +78,9 @@ EMA_ATR_OFFSET_MULT = _get_env_float("EMA_ATR_OFFSET_MULT", 0.9)
 # Confirmation must happen within N closed candles after basis.
 CONFIRM_WITHIN_BARS = _get_env_int("CONFIRM_WITHIN_BARS", 5)
 
+# State machine: BREAKOUT/PULLBACK expires if (bar_index - basis_bar) > this (기본 7봉).
+STATE_TIMEOUT_BARS = _get_env_int("STATE_TIMEOUT_BARS", 7)
+
 # Filters
 ADX_MIN = _get_env_float("ADX_MIN", 25.0)
 RSI_LONG_MIN = _get_env_float("RSI_LONG_MIN", 60.0)
