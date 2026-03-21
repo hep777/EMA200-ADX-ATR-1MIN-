@@ -131,6 +131,117 @@ def get_top_usdt_symbols_by_quote_volume(limit: int = 20, min_last_price: float 
     return [sym.lower() for sym, _ in rows[:limit]]
 
 
+def _price_tick_size_from_symbol_info(symbol_dict: dict) -> float:
+    for f in symbol_dict.get("filters", []):
+        if f.get("filterType") == "PRICE_FILTER":
+            try:
+                return float(f.get("tickSize", "0"))
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
+
+
+def get_combined_universe_symbols(
+    volume_top_n: int = 20,
+    gainer_pool_size: int = 300,
+    max_total: int = 300,
+    max_tick_as_pct_of_price: float = 0.004,
+    min_last_price: float = 0.0,
+) -> List[str]:
+    """
+    총합 ≤ max_total.
+    1) 24h 거래대금(quoteVolume) 상위 volume_top_n — 틱 필터 없음, 먼저 포함
+    2) 나머지 슬롯: 24h 상승률 상위 gainer_pool_size개 '풀'을 순회하며
+       tick/price >= max_tick_as_pct_of_price 는 제외, max_total까지 채움
+    """
+    info_resp = requests.get(f"{BASE_URL}/fapi/v1/exchangeInfo", timeout=10)
+    info_data = info_resp.json()
+    tick_by_symbol: Dict[str, float] = {}
+    for s in info_data.get("symbols", []):
+        if s.get("quoteAsset") != "USDT":
+            continue
+        if s.get("contractType") != "PERPETUAL":
+            continue
+        if s.get("status") != "TRADING":
+            continue
+        sym = s.get("symbol", "")
+        if not sym or sym in EXCLUDE_SYMBOLS:
+            continue
+        tick = _price_tick_size_from_symbol_info(s)
+        if tick <= 0:
+            continue
+        tick_by_symbol[sym] = tick
+
+    tick_resp = requests.get(f"{BASE_URL}/fapi/v1/ticker/24hr", timeout=10)
+    tick_data = tick_resp.json()
+    rows: List[Tuple[str, float, float, float]] = []
+    for row in tick_data:
+        sym = row.get("symbol", "")
+        if sym not in tick_by_symbol:
+            continue
+        try:
+            last_price = float(row.get("lastPrice", 0))
+            qv = float(row.get("quoteVolume", 0))
+            pct = float(row.get("priceChangePercent", 0))
+        except (TypeError, ValueError):
+            continue
+        if last_price < min_last_price:
+            continue
+        rows.append((sym, qv, pct, last_price))
+
+    by_vol = sorted(rows, key=lambda x: x[1], reverse=True)
+    vol_top_syms = [r[0] for r in by_vol[:volume_top_n]]
+
+    by_pct = sorted(rows, key=lambda x: x[2], reverse=True)
+    gainer_pool = by_pct[:gainer_pool_size]
+
+    out: List[str] = []
+    seen: set[str] = set()
+
+    for sym in vol_top_syms:
+        if len(out) >= max_total:
+            break
+        if sym in tick_by_symbol:
+            sl = sym.lower()
+            if sl not in seen:
+                out.append(sl)
+                seen.add(sl)
+
+    for sym, _qv, _pct, last_price in gainer_pool:
+        if len(out) >= max_total:
+            break
+        sl = sym.lower()
+        if sl in seen:
+            continue
+        tick = tick_by_symbol[sym]
+        tick_pct = tick / last_price if last_price > 0 else 1.0
+        if tick_pct >= max_tick_as_pct_of_price:
+            continue
+        out.append(sl)
+        seen.add(sl)
+
+    logger.info(
+        "Universe: total=%d (cap=%d), vol_top_n=%d, gainer_pool=%d, tick<%s%% on filler only",
+        len(out),
+        max_total,
+        volume_top_n,
+        gainer_pool_size,
+        max_tick_as_pct_of_price * 100.0,
+    )
+    return out
+
+
+def get_gainer_universe_symbols(
+    top_gainers: int = 300,
+    max_tick_as_pct_of_price: float = 0.004,
+    min_last_price: float = 0.0,
+) -> List[str]:
+    """하위 호환: 거래대금 0 + 상승률만."""
+    return get_combined_universe_symbols(
+        0, top_gainers, top_gainers, max_tick_as_pct_of_price, min_last_price
+    )
+
+
 def get_symbol_info(symbol: str) -> Optional[Dict[str, Any]]:
     # Note: symbol must be like "BTCUSDT"
     resp = requests.get(f"{BASE_URL}/fapi/v1/exchangeInfo", timeout=10)

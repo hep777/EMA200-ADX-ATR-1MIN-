@@ -26,7 +26,7 @@ nano .env  # BINANCE_API_KEY / BINANCE_API_SECRET / TELEGRAM_BOT_TOKEN / TELEGRA
 
 추가 전략 튜닝 값:
 - `EMA_SLOPE_MIN_PCT` : EMA200의 5봉 기울기 최소 비율 (기본 `0.001` = 0.1%)
-- `STATE_TIMEOUT_BARS` : 기준봉 이후 `BREAKOUT`/`PULLBACK` 상태 유지 최대 봉 수(초과 시 `STATE_RESET`). 기본 `7` (옛 기본 `5`)
+- `STATE_TIMEOUT_BARS` : 기준봉 이후 `BREAKOUT`(진입 대기) 유지 최대 봉 수(초과 시 `STATE_RESET`). 기본 `7`
 
 ### 4) systemd 서비스 등록
 ```sh

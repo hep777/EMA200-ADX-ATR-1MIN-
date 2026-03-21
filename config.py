@@ -78,7 +78,7 @@ EMA_ATR_OFFSET_MULT = _get_env_float("EMA_ATR_OFFSET_MULT", 0.9)
 # Confirmation must happen within N closed candles after basis.
 CONFIRM_WITHIN_BARS = _get_env_int("CONFIRM_WITHIN_BARS", 5)
 
-# State machine: BREAKOUT/PULLBACK expires if (bar_index - basis_bar) > this (기본 7봉).
+# 기준봉 이후 BREAKOUT(진입 대기) 만료: (bar_index - basis_bar) > 이 값 (기본 7봉).
 STATE_TIMEOUT_BARS = _get_env_int("STATE_TIMEOUT_BARS", 7)
 
 # Filters
@@ -125,8 +125,13 @@ MARGIN_TYPE = "ISOLATED"
 # Skip symbols (optional)
 EXCLUDE_SYMBOLS = [s.strip().upper() for s in os.getenv("EXCLUDE_SYMBOLS", "").split(",") if s.strip()]
 
-# Top N USDT perpetuals by 24h quote volume (watchlist)
-UNIVERSE_TOP_N = _get_env_int("UNIVERSE_TOP_N", 200)
+# 유니버스: 총합 ≤ UNIVERSE_MAX_TOTAL
+# 1) 24h 거래대금(quoteVolume) 상위 UNIVERSE_VOLUME_TOP_N — 틱 필터 없이 무조건 포함
+# 2) 나머지 슬롯: 24h 상승률 상위 UNIVERSE_GAINER_POOL개 풀에서만 고름, 틱≥UNIVERSE_MAX_TICK_PCT 제외
+UNIVERSE_MAX_TOTAL = _get_env_int("UNIVERSE_MAX_TOTAL", 300)
+UNIVERSE_VOLUME_TOP_N = _get_env_int("UNIVERSE_VOLUME_TOP_N", 20)
+UNIVERSE_GAINER_POOL = _get_env_int("UNIVERSE_GAINER_POOL", 300)
+UNIVERSE_MAX_TICK_PCT = _get_env_float("UNIVERSE_MAX_TICK_PCT", 0.004)
 
 # Pull SL slightly past Binance liquidation toward the safe side (avoid liq before stop)
 LIQ_STOP_BUFFER_PCT = _get_env_float("LIQ_STOP_BUFFER_PCT", 0.002)

@@ -21,7 +21,7 @@ from binance_client import (
     get_liquidation_prices_map,
     get_open_orders,
     get_open_positions,
-    get_top_usdt_symbols_by_quote_volume,
+    get_combined_universe_symbols,
     open_position_market,
     place_reduce_only_stop_market,
     set_isolated_and_leverage,
@@ -35,7 +35,10 @@ from config import (
     MAX_CONCURRENT_POSITIONS,
     POSITION_RISK_PCT,
     STREAM_BATCH_SIZE,
-    UNIVERSE_TOP_N,
+    UNIVERSE_GAINER_POOL,
+    UNIVERSE_MAX_TICK_PCT,
+    UNIVERSE_MAX_TOTAL,
+    UNIVERSE_VOLUME_TOP_N,
     validate_secrets,
 )
 from indicators import TrendIndicatorComputer
@@ -51,6 +54,8 @@ indicator_map: Dict[str, TrendIndicatorComputer] = {}
 signal_state_map: Dict[str, Dict[str, float | int | str]] = {}
 bar_index_map: Dict[str, int] = {}
 ema_history_map: Dict[str, Deque[float]] = {}
+rsi_history_map: Dict[str, Deque[float]] = {}
+adx_history_map: Dict[str, Deque[float]] = {}
 low_window_map: Dict[str, Deque[float]] = {}
 high_window_map: Dict[str, Deque[float]] = {}
 last_close_map: Dict[str, float] = {}
@@ -113,6 +118,8 @@ def _retry_call(fn, *args, **kwargs):
 def _bootstrap_symbol_indicators(symbol_upper: str) -> None:
     comp = TrendIndicatorComputer(ema_period=200, atr_period=ATR_PERIOD, adx_period=ATR_PERIOD)
     ema_history_map[symbol_upper] = deque(maxlen=6)
+    rsi_history_map[symbol_upper] = deque(maxlen=6)
+    adx_history_map[symbol_upper] = deque(maxlen=6)
     low_window_map[symbol_upper] = deque(maxlen=10)
     high_window_map[symbol_upper] = deque(maxlen=10)
     last_close_map.pop(symbol_upper, None)
@@ -130,6 +137,10 @@ def _bootstrap_symbol_indicators(symbol_upper: str) -> None:
         values = comp.update(high, low, close)
         if values["ema"] is not None:
             ema_history_map[symbol_upper].append(float(values["ema"]))
+        if values["rsi"] is not None:
+            rsi_history_map[symbol_upper].append(float(values["rsi"]))
+        if values["adx"] is not None:
+            adx_history_map[symbol_upper].append(float(values["adx"]))
         low_window_map[symbol_upper].append(low)
         high_window_map[symbol_upper].append(high)
         last_close_map[symbol_upper] = close
@@ -140,17 +151,29 @@ def _bootstrap_symbol_indicators(symbol_upper: str) -> None:
 
 
 def _select_daily_symbols() -> List[str]:
-    # Top UNIVERSE_TOP_N by quote volume (default 200). min_last_price=0 keeps thin alts.
-    symbols = _retry_call(get_top_usdt_symbols_by_quote_volume, UNIVERSE_TOP_N, 0.0)
+    # 거래대금 상위 N + 상승률 풀에서 틱필터, 총 UNIVERSE_MAX_TOTAL 이하
+    symbols = _retry_call(
+        get_combined_universe_symbols,
+        UNIVERSE_VOLUME_TOP_N,
+        UNIVERSE_GAINER_POOL,
+        UNIVERSE_MAX_TOTAL,
+        UNIVERSE_MAX_TICK_PCT,
+        0.0,
+    )
     return symbols or []
 
 
 def _send_daily_universe_report(symbols: List[str]) -> None:
     if not symbols:
-        tg.send_message(f"📋 일일 코인 랭킹(Top{UNIVERSE_TOP_N})\n대상 코인 없음")
+        tg.send_message(f"📋 일일 코인 랭킹(최대{UNIVERSE_MAX_TOTAL})\n대상 코인 없음")
         return
-    lines = [f"📋 일일 코인 랭킹(거래량 Top{UNIVERSE_TOP_N}, KST 09:00 기준)"]
-    for i, s in enumerate(symbols[:UNIVERSE_TOP_N], 1):
+    n = len(symbols)
+    lines = [
+        f"📋 일일 코인 랭킹 (총 {n}개, 최대 {UNIVERSE_MAX_TOTAL}개)\n"
+        f"거래대금 Top{UNIVERSE_VOLUME_TOP_N} 고정 + 상승률풀 {UNIVERSE_GAINER_POOL} "
+        f"(틱≥{UNIVERSE_MAX_TICK_PCT * 100:.2f}% 제외), KST 09:00 기준"
+    ]
+    for i, s in enumerate(symbols, 1):
         lines.append(f"{i:>3}. {s.upper()}")
 
     # Telegram message size limit safety.
@@ -428,14 +451,25 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
     values = comp.update(high, low, close)
     if values["ema"] is not None:
         ema_history_map.setdefault(symbol_upper, deque(maxlen=6)).append(float(values["ema"]))
+    if values["rsi"] is not None:
+        rsi_history_map.setdefault(symbol_upper, deque(maxlen=6)).append(float(values["rsi"]))
+    if values["adx"] is not None:
+        adx_history_map.setdefault(symbol_upper, deque(maxlen=6)).append(float(values["adx"]))
     low_window_map.setdefault(symbol_upper, deque(maxlen=10)).append(low)
     high_window_map.setdefault(symbol_upper, deque(maxlen=10)).append(high)
     prev_close = last_close_map.get(symbol_upper)
-    prev_rsi = last_rsi_map.get(symbol_upper)
     ema_hist = ema_history_map.get(symbol_upper)
     ema_5 = None
     if ema_hist and len(ema_hist) >= 6:
         ema_5 = list(ema_hist)[0]
+    rsi_hist = rsi_history_map.get(symbol_upper)
+    rsi_5 = None
+    if rsi_hist and len(rsi_hist) >= 6:
+        rsi_5 = list(rsi_hist)[0]
+    adx_hist = adx_history_map.get(symbol_upper)
+    adx_5 = None
+    if adx_hist and len(adx_hist) >= 6:
+        adx_5 = list(adx_hist)[0]
     last_close_map[symbol_upper] = close
     last_rsi_map[symbol_upper] = values["rsi"]
 
@@ -455,8 +489,9 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
         ema_5=ema_5,
         atr=values["atr"],
         rsi=values["rsi"],
-        prev_rsi=prev_rsi,
+        rsi_5=rsi_5,
         adx=values["adx"],
+        adx_5=adx_5,
         state=prev_state,
         bar_index=idx,
         prev_close=prev_close,
@@ -483,23 +518,6 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
             f"상태: BREAKOUT\n\n"
             f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
         )
-    elif event == "PULLBACK":
-        direction = str(next_state.get("direction", "")).upper() if next_state else "N/A"
-        logger.info(
-            "[%s] PULLBACK symbol=%s price=%.6f phase=PULLBACK",
-            datetime.now(timezone.utc).isoformat(),
-            symbol_upper,
-            close,
-        )
-        tg.send_message(
-            f"⏳ 진입 대기(PULLBACK)\n"
-            f"코인: #{symbol_upper}\n"
-            f"방향: {direction}\n"
-            f"가격: {_fmt_price(close)}\n"
-            f"상태: PULLBACK\n"
-            f"마지막 조건만 남음: 재돌파(롱 종가>기준고가 / 숏 종가<기준저가)\n\n"
-            f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
-        )
     elif event == "STATE_RESET":
         logger.info(
             "[%s] STATE_RESET symbol=%s price=%.6f phase=IDLE",
@@ -513,14 +531,13 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
 
     atr_used = float(signal["atr_used"])
     direction = str(signal["direction"])
+    # 초기 SL: 기준봉 저가/고가 ± 0.5×ATR (구조 무효화)
     if direction == "long":
-        lows = list(low_window_map.get(symbol_upper, deque(maxlen=10)))
-        swing_low = min(lows[-10:]) if lows else low
-        initial_sl = swing_low - (atr_used * 0.5)
+        basis_low = float(signal.get("basis_low", low))
+        initial_sl = basis_low - (atr_used * 0.5)
     else:
-        highs = list(high_window_map.get(symbol_upper, deque(maxlen=10)))
-        swing_high = max(highs[-10:]) if highs else high
-        initial_sl = swing_high + (atr_used * 0.5)
+        basis_high = float(signal.get("basis_high", high))
+        initial_sl = basis_high + (atr_used * 0.5)
     if direction == "long" and initial_sl >= close:
         initial_sl = close - max(atr_used * 0.5, close * 0.001)
     elif direction == "short" and initial_sl <= close:
@@ -863,7 +880,7 @@ def main() -> None:
 
     tg.send_message(
         f"🚀 봇 시작\n"
-        f"전략: Breakout->Pullback->Rebreak (+Chase)\n"
+        f"전략: RSI/ADX/EMA 기울기 + 기준봉 고저 돌파 (7봉)\n"
         f"대상 코인: {len(symbols)}개\n"
         f"초기 500봉 로딩 완료"
     )
