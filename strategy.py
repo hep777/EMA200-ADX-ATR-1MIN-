@@ -9,18 +9,21 @@ PULLBACK = "PULLBACK"
 STATE_TIMEOUT_BARS = 5
 
 
-def _build_breakout_state(direction: str, bar_index: int, breakout_price: float) -> Dict[str, float | int | str]:
+def _build_breakout_state(
+    direction: str, bar_index: int, breakout_extreme: float, basis_close: float
+) -> Dict[str, float | int | str]:
     state: Dict[str, float | int | str] = {
         "phase": BREAKOUT,
         "direction": direction,
         "basis_bar": bar_index,
         "rise_streak": 1,
+        "basis_close": float(basis_close),
     }
     if direction == "long":
-        state["breakout_high"] = breakout_price
+        state["breakout_high"] = breakout_extreme
         state["last_low"] = 0.0
     else:
-        state["breakout_low"] = breakout_price
+        state["breakout_low"] = breakout_extreme
         state["last_high"] = 0.0
     return state
 
@@ -68,11 +71,11 @@ def decide_entry_signal(
 
     if phase == IDLE:
         if long_basis:
-            next_state = _build_breakout_state("long", bar_index, high_price)
+            next_state = _build_breakout_state("long", bar_index, high_price, close_price)
             next_state["last_low"] = low_price
             return None, next_state, "BREAKOUT"
         if short_basis:
-            next_state = _build_breakout_state("short", bar_index, low_price)
+            next_state = _build_breakout_state("short", bar_index, low_price, close_price)
             next_state["last_high"] = high_price
             return None, next_state, "BREAKOUT"
         return None, None, None
@@ -104,7 +107,8 @@ def decide_entry_signal(
             state["rise_streak"] = rise_streak
             state["last_low"] = low_price
 
-            if rise_streak == 3 and close_price >= (breakout_high * 1.005) and rsi < 70.0:
+            basis_close = float(state.get("basis_close", close_price))
+            if rise_streak == 2 and close_price >= (basis_close * 1.005):
                 return (
                     {
                         "direction": "long",
@@ -148,7 +152,8 @@ def decide_entry_signal(
         state["rise_streak"] = fall_streak
         state["last_high"] = high_price
 
-        if fall_streak == 3 and close_price <= (breakout_low * 0.995) and rsi > 30.0:
+        basis_close = float(state.get("basis_close", close_price))
+        if fall_streak == 2 and close_price <= (basis_close * 0.995):
             return (
                 {
                     "direction": "short",

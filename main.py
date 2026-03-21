@@ -32,6 +32,7 @@ from config import (
     MAX_CONCURRENT_POSITIONS,
     POSITION_RISK_PCT,
     STREAM_BATCH_SIZE,
+    UNIVERSE_TOP_N,
     validate_secrets,
 )
 from indicators import TrendIndicatorComputer
@@ -56,6 +57,7 @@ tracked_symbols: List[str] = []
 last_protection_sync_ts = 0.0
 latest_price_map: Dict[str, float] = {}
 KST = timezone(timedelta(hours=9))
+_last_exchange_reconcile_ts = 0.0
 
 
 def check_single_instance() -> None:
@@ -135,18 +137,17 @@ def _bootstrap_symbol_indicators(symbol_upper: str) -> None:
 
 
 def _select_daily_symbols() -> List[str]:
-    # Keep exactly top-100 by quote volume when possible.
-    # min_last_price=0.0 prevents dropping sub-$1 symbols.
-    symbols = _retry_call(get_top_usdt_symbols_by_quote_volume, 100, 0.0)
+    # Top UNIVERSE_TOP_N by quote volume (default 200). min_last_price=0 keeps thin alts.
+    symbols = _retry_call(get_top_usdt_symbols_by_quote_volume, UNIVERSE_TOP_N, 0.0)
     return symbols or []
 
 
 def _send_daily_universe_report(symbols: List[str]) -> None:
     if not symbols:
-        tg.send_message("📋 일일 코인 랭킹(Top100)\n대상 코인 없음")
+        tg.send_message(f"📋 일일 코인 랭킹(Top{UNIVERSE_TOP_N})\n대상 코인 없음")
         return
-    lines = ["📋 일일 코인 랭킹(거래량 Top100, KST 09:00 기준)"]
-    for i, s in enumerate(symbols[:100], 1):
+    lines = [f"📋 일일 코인 랭킹(거래량 Top{UNIVERSE_TOP_N}, KST 09:00 기준)"]
+    for i, s in enumerate(symbols[:UNIVERSE_TOP_N], 1):
         lines.append(f"{i:>3}. {s.upper()}")
 
     # Telegram message size limit safety.
@@ -201,6 +202,66 @@ def _binance_link(symbol_upper: str) -> str:
 
 def _fmt_price(value: float) -> str:
     return f"{value:.4f}"
+
+
+def _normalize_position_stops(pos: Dict[str, Any]) -> None:
+    """
+    Ensure initial SL is on the correct side of entry (long: below, short: above).
+    Fixes swing-based SL when recent highs/lows are on the wrong side of entry.
+    """
+    direction = str(pos.get("direction", "long"))
+    entry = float(pos.get("entry_price", 0.0))
+    if entry <= 0:
+        return
+    atr_used = float(pos.get("atr_used", entry * 0.001))
+    min_buf = max(atr_used * 0.5, entry * 0.001)
+    sl = float(pos.get("initial_sl", entry))
+    if direction == "long":
+        if sl >= entry:
+            sl = entry - min_buf
+        pos["initial_sl"] = float(sl)
+        trail = float(pos.get("trail_sl", sl))
+        if trail > entry:
+            trail = sl
+        pos["trail_sl"] = trail
+    else:
+        if sl <= entry:
+            sl = entry + min_buf
+        pos["initial_sl"] = float(sl)
+        trail = float(pos.get("trail_sl", sl))
+        if trail < entry:
+            trail = sl
+        pos["trail_sl"] = trail
+    r_val = (entry - float(pos["initial_sl"])) if direction == "long" else (float(pos["initial_sl"]) - entry)
+    if r_val <= 0:
+        r_val = min_buf
+    pos["r_value"] = float(r_val)
+
+
+def _effective_stop_price(pos: Dict[str, Any]) -> float:
+    direction = str(pos.get("direction", "long"))
+    initial_sl = float(pos.get("initial_sl", 0.0))
+    trail_sl = float(pos.get("trail_sl", initial_sl))
+    trail_on = bool(pos.get("trail_active", False))
+    if direction == "long":
+        return max(initial_sl, trail_sl) if trail_on else initial_sl
+    return min(initial_sl, trail_sl) if trail_on else initial_sl
+
+
+def reconcile_positions_with_exchange() -> None:
+    """Drop ghost positions after liquidation/manual close; keep state.json in sync."""
+    exchange = get_open_positions()
+    exchange_symbols = {p["symbol"] for p in exchange}
+    with state_lock:
+        st = load_state()
+        changed = False
+        for sym in list(active_positions.keys()):
+            if sym not in exchange_symbols:
+                active_positions.pop(sym, None)
+                remove_position(st, sym)
+                changed = True
+        if changed:
+            save_state(st)
 
 
 def _ensure_server_stop_for_position(symbol_upper: str, pos: Dict[str, Any], force_replace: bool = False) -> bool:
@@ -288,6 +349,8 @@ def _open_trade(symbol_upper: str, signal: Dict[str, Any]) -> None:
     if direction == "short" and initial_sl <= entry_price:
         initial_sl = entry_price + (atr_used * 0.5)
     pos_state = _build_position_state(symbol_upper, direction, entry_price, qty, atr_used, initial_sl)
+    _normalize_position_stops(pos_state)
+    pos_state["server_stop_price"] = _effective_stop_price(pos_state)
     with state_lock:
         active_positions[symbol_upper] = pos_state
         st = load_state()
@@ -397,7 +460,7 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
             f"방향: {direction}\n"
             f"가격: {_fmt_price(close)}\n"
             f"상태: PULLBACK\n"
-            f"마지막 조건만 남음: 재돌파(롱>breakout_high / 숏<breakout_low)\n\n"
+            f"마지막 조건만 남음: 재돌파(롱 종가>기준고가 / 숏 종가<기준저가)\n\n"
             f"<a href=\"{_binance_link(symbol_upper)}\">Binance</a>"
         )
     elif event == "STATE_RESET":
@@ -421,6 +484,10 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
         highs = list(high_window_map.get(symbol_upper, deque(maxlen=10)))
         swing_high = max(highs[-10:]) if highs else high
         initial_sl = swing_high + (atr_used * 0.5)
+    if direction == "long" and initial_sl >= close:
+        initial_sl = close - max(atr_used * 0.5, close * 0.001)
+    elif direction == "short" and initial_sl <= close:
+        initial_sl = close + max(atr_used * 0.5, close * 0.001)
     signal["initial_sl"] = initial_sl
 
     with state_lock:
@@ -464,7 +531,7 @@ def _close_and_cleanup(symbol_upper: str, pos: Dict[str, Any], reason: str, exit
 
 
 def monitor_positions_loop() -> None:
-    global last_protection_sync_ts
+    global last_protection_sync_ts, _last_exchange_reconcile_ts
     while True:
         time.sleep(2)
         with state_lock:
@@ -474,6 +541,12 @@ def monitor_positions_loop() -> None:
                 mark = latest_price_map.get(sym)
                 if mark is None:
                     continue
+                with state_lock:
+                    live = active_positions.get(sym)
+                if live is None:
+                    continue
+                pos = live
+                _normalize_position_stops(pos)
                 direction = str(pos["direction"])
                 atr_used = float(pos["atr_used"])
                 if direction == "long":
@@ -508,6 +581,10 @@ def monitor_positions_loop() -> None:
                 logger.error(f"Monitor error {sym}: {e}")
 
         now = time.time()
+        if now - _last_exchange_reconcile_ts >= 30:
+            _last_exchange_reconcile_ts = now
+            reconcile_positions_with_exchange()
+
         if now - last_protection_sync_ts >= 15:
             last_protection_sync_ts = now
             with state_lock:
@@ -528,12 +605,17 @@ def recover_positions() -> None:
         exchange_symbols.add(sym)
         if sym in saved:
             active_positions[sym] = saved[sym]
+            _normalize_position_stops(active_positions[sym])
+            active_positions[sym]["server_stop_price"] = _effective_stop_price(active_positions[sym])
             _ensure_server_stop_for_position(sym, active_positions[sym])
+            upsert_position(st, sym, active_positions[sym])
             continue
         entry = float(p["entry_price"])
         qty = float(p["amount"])
         direction = p["direction"]
         active_positions[sym] = _build_position_state(sym, direction, entry, qty, atr_used=entry * 0.003)
+        _normalize_position_stops(active_positions[sym])
+        active_positions[sym]["server_stop_price"] = _effective_stop_price(active_positions[sym])
         _ensure_server_stop_for_position(sym, active_positions[sym])
         upsert_position(st, sym, active_positions[sym])
     for sym in list(saved.keys()):
@@ -543,7 +625,10 @@ def recover_positions() -> None:
 
 
 def cmd_status() -> None:
+    reconcile_positions_with_exchange()
     with state_lock:
+        for _sym, _pos in list(active_positions.items()):
+            _normalize_position_stops(_pos)
         positions = dict(active_positions)
         cnt = len(positions)
     eq = get_account_equity_usdt()
@@ -564,7 +649,7 @@ def cmd_status() -> None:
         direction = str(pos.get("direction", "")).lower()
         side_icon = "🟢📈" if direction == "long" else "🔴📉"
         entry = float(pos.get("entry_price", 0.0))
-        stop_price = float(pos.get("server_stop_price", pos.get("initial_sl", 0.0)))
+        stop_price = _effective_stop_price(pos)
         lines.append("")
         lines.append(f"{side_icon} #{sym}")
         lines.append(f"포지션: {direction.upper()}")

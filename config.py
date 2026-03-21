@@ -121,6 +121,9 @@ MARGIN_TYPE = "ISOLATED"
 # Skip symbols (optional)
 EXCLUDE_SYMBOLS = [s.strip().upper() for s in os.getenv("EXCLUDE_SYMBOLS", "").split(",") if s.strip()]
 
+# Top N USDT perpetuals by 24h quote volume (watchlist)
+UNIVERSE_TOP_N = _get_env_int("UNIVERSE_TOP_N", 200)
+
 
 # ─────────────────────────────────────────────
 # Websocket settings
