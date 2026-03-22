@@ -147,8 +147,12 @@ LEVERAGE_BY_SYMBOL = {
 DESIRED_LEVERAGE = DEFAULT_LEVERAGE
 MARGIN_TYPE = "ISOLATED"
 
-# Skip symbols (optional)
-EXCLUDE_SYMBOLS = [s.strip().upper() for s in os.getenv("EXCLUDE_SYMBOLS", "").split(",") if s.strip()]
+# Skip symbols (optional). 기본: BTC·ETH 제외 (요청 스펙)
+EXCLUDE_SYMBOLS = [
+    s.strip().upper()
+    for s in _get_env_str("EXCLUDE_SYMBOLS", "BTCUSDT,ETHUSDT").split(",")
+    if s.strip()
+]
 
 # 유니버스: 총합 ≤ UNIVERSE_MAX_TOTAL
 # 1) 24h 거래대금(quoteVolume) 상위 UNIVERSE_VOLUME_TOP_N — 틱 필터 없이 무조건 포함
@@ -182,11 +186,25 @@ WEBSOCKET_PING_TIMEOUT = _get_env_int("WEBSOCKET_PING_TIMEOUT", 20)
 # Runtime
 # ─────────────────────────────────────────────
 
-LOCK_FILE = os.getenv("LOCK_FILE", "/tmp/atr_bot.lock")
+LOCK_FILE = os.getenv("LOCK_FILE", "/tmp/bot.lock")
 STATE_FILE = os.getenv("STATE_FILE", "state.json")
 LOG_FILE = os.getenv("LOG_FILE", "bot.log")
 
-# Binance 계정/모드에서 STOP_MARKET 엔드포인트 미지원(-4120)일 수 있어
-# 기본값은 OFF로 두고 로컬 트레일링 청산만 사용합니다.
-ENABLE_SERVER_STOP = _get_env_bool("ENABLE_SERVER_STOP", False)
+# RSI 다이버전스 전략: 거래소 TP/SL(STOP/TAKE_PROFIT MARKET) 사용 권장
+ENABLE_SERVER_STOP = _get_env_bool("ENABLE_SERVER_STOP", True)
+
+# ─────────────────────────────────────────────
+# RSI 다이버전스 역추세 (bot.py)
+# ─────────────────────────────────────────────
+
+RSI_DIV_PERIOD = _get_env_int("RSI_DIV_PERIOD", 14)
+RSI_SHORT_TRIGGER = _get_env_float("RSI_SHORT_TRIGGER", 80.0)
+RSI_LONG_TRIGGER = _get_env_float("RSI_LONG_TRIGGER", 20.0)
+DIV_WINDOW_BARS = _get_env_int("DIV_WINDOW_BARS", 20)
+BREAKOUT_LOOKBACK_BARS = _get_env_int("BREAKOUT_LOOKBACK_BARS", 20)
+SL_ATR_MULT = _get_env_float("SL_ATR_MULT", 1.5)
+TP_ATR_MULT = _get_env_float("TP_ATR_MULT", 3.0)
+
+# 유니버스: 24h 거래대금 상위 N (기본 300). gainer 혼합 없음.
+UNIVERSE_TOP_VOLUME = _get_env_int("UNIVERSE_TOP_VOLUME", 300)
 

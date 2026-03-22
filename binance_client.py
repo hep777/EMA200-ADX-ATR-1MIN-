@@ -2,7 +2,6 @@ import hashlib
 import hmac
 import time
 import logging
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
@@ -267,18 +266,41 @@ def get_symbol_info(symbol: str) -> Optional[Dict[str, Any]]:
             qty_precision = s.get("quantityPrecision", 0)
             min_qty = 0.0
             min_notional = 0.0
+            tick_size = 0.0
             for f in s.get("filters", []):
                 if f.get("filterType") == "LOT_SIZE":
                     min_qty = float(f.get("minQty", 0))
                 elif f.get("filterType") == "MIN_NOTIONAL":
                     min_notional = float(f.get("notional", 0))
+                elif f.get("filterType") == "PRICE_FILTER":
+                    try:
+                        tick_size = float(f.get("tickSize", 0) or 0)
+                    except (TypeError, ValueError):
+                        tick_size = 0.0
             return {
                 "price_precision": price_precision,
                 "qty_precision": qty_precision,
                 "min_qty": min_qty,
                 "min_notional": min_notional,
+                "tick_size": tick_size,
             }
     return None
+
+
+def get_price_tick_size(symbol: str) -> float:
+    """PRICE_FILTER tickSize for symbol (e.g. BTCUSDT)."""
+    info = get_symbol_info(symbol)
+    if not info:
+        return 0.0
+    return float(info.get("tick_size", 0.0) or 0.0)
+
+
+def round_price_to_tick(symbol: str, price: float) -> float:
+    tick = get_price_tick_size(symbol)
+    if tick <= 0:
+        return round(price, 8)
+    steps = round(price / tick)
+    return round(steps * tick, 8)
 
 
 def get_max_leverage(symbol: str) -> int:
@@ -558,6 +580,7 @@ def place_reduce_only_stop_market(
 ) -> Optional[Dict[str, Any]]:
     side = "SELL" if direction == "long" else "BUY"
     # Primary: reduceOnly + quantity (widely compatible)
+    sp = round_price_to_tick(symbol, float(stop_price))
     primary = _request(
         "POST",
         "/fapi/v1/order",
@@ -565,7 +588,7 @@ def place_reduce_only_stop_market(
             "symbol": symbol,
             "side": side,
             "type": "STOP_MARKET",
-            "stopPrice": round(stop_price, 8),
+            "stopPrice": sp,
             "quantity": quantity,
             "reduceOnly": "true",
             "workingType": "MARK_PRICE",
@@ -582,7 +605,7 @@ def place_reduce_only_stop_market(
             "symbol": symbol,
             "side": side,
             "type": "STOP_MARKET",
-            "stopPrice": round(stop_price, 8),
+            "stopPrice": sp,
             "workingType": "MARK_PRICE",
             "closePosition": "true",
         },
@@ -610,4 +633,90 @@ def cancel_all_open_orders(symbol: str) -> Optional[List[Dict[str, Any]]]:
 
 def cancel_order(symbol: str, order_id: int) -> Optional[Dict[str, Any]]:
     return _request("DELETE", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+
+
+def place_take_profit_market(
+    symbol: str, direction: str, tp_price: float, quantity: float
+) -> Optional[Dict[str, Any]]:
+    """Reduce-only take-profit (MARK_PRICE trigger)."""
+    side = "SELL" if direction == "long" else "BUY"
+    px = round_price_to_tick(symbol, float(tp_price))
+    primary = _request(
+        "POST",
+        "/fapi/v1/order",
+        {
+            "symbol": symbol,
+            "side": side,
+            "type": "TAKE_PROFIT_MARKET",
+            "stopPrice": px,
+            "quantity": quantity,
+            "reduceOnly": "true",
+            "workingType": "MARK_PRICE",
+        },
+    )
+    if primary is not None:
+        return primary
+    return _request(
+        "POST",
+        "/fapi/v1/order",
+        {
+            "symbol": symbol,
+            "side": side,
+            "type": "TAKE_PROFIT_MARKET",
+            "stopPrice": px,
+            "workingType": "MARK_PRICE",
+            "closePosition": "true",
+        },
+    )
+
+
+def get_top_usdt_perpet_by_quote_volume(
+    limit: int = 300,
+    extra_exclude: Optional[Tuple[str, ...]] = None,
+) -> List[str]:
+    """
+    24h quoteVolume 기준 상위 limit개 USDT 무기한 선물 심볼 (소문자).
+    EXCLUDE_SYMBOLS + extra_exclude 제외.
+    """
+    ex: set[str] = set(s.upper() for s in EXCLUDE_SYMBOLS)
+    if extra_exclude:
+        ex.update(s.upper() for s in extra_exclude)
+
+    info_resp = requests.get(f"{BASE_URL}/fapi/v1/exchangeInfo", timeout=15)
+    info_data = info_resp.json()
+    tradable: set[str] = set()
+    for s in info_data.get("symbols", []):
+        if s.get("quoteAsset") != "USDT":
+            continue
+        if s.get("contractType") != "PERPETUAL":
+            continue
+        if s.get("status") != "TRADING":
+            continue
+        sym = s.get("symbol", "")
+        if not sym or sym in ex:
+            continue
+        tradable.add(sym)
+
+    tick_resp = requests.get(f"{BASE_URL}/fapi/v1/ticker/24hr", timeout=15)
+    tick_data = tick_resp.json()
+    rows: List[Tuple[str, float]] = []
+    for row in tick_data:
+        sym = row.get("symbol", "")
+        if sym not in tradable:
+            continue
+        try:
+            qv = float(row.get("quoteVolume", 0))
+        except (TypeError, ValueError):
+            continue
+        rows.append((sym, qv))
+
+    rows.sort(key=lambda x: x[1], reverse=True)
+    out = [sym.lower() for sym, _ in rows[:limit]]
+    logger.info(
+        "Universe (volume top %d): count=%d exclude=%s",
+        limit,
+        len(out),
+        sorted(ex),
+    )
+    return out
 
