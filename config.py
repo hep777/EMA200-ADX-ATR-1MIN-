@@ -108,11 +108,12 @@ ENTRY_SL_MIN_ATR_MULT = _get_env_float("ENTRY_SL_MIN_ATR_MULT", 1.0)
 # 고점/저점에서 이 ATR 배수만큼 떨어진 곳에 트레일 SL (main.py 모니터 루프)
 TRAILING_ATR_MULT = _get_env_float("TRAILING_ATR_MULT", 3.0)
 
-# 트레일 ON: 진입가 ± (R × 이 배수) 도달 시 (기본 0.5 = 반 R부터 ATR 트레일 계산)
-TRAIL_ACTIVATE_R_MULT = _get_env_float("TRAIL_ACTIVATE_R_MULT", 0.5)
+# 트레일 ON: 진입가 ± (R × 이 배수) 도달 시부터 ATR 트레일 계산
+TRAIL_ACTIVATE_R_MULT = _get_env_float("TRAIL_ACTIVATE_R_MULT", 0.6)
 # 본절 잠금: 진입가 ± (R × 이 배수) 도달 시 손절선을 진입가 근처로 끌어올림 (수익 후 전부 반납 완화)
-BREAKEVEN_LOCK_R_MULT = _get_env_float("BREAKEVEN_LOCK_R_MULT", 0.35)
-BREAKEVEN_BUFFER_PCT = _get_env_float("BREAKEVEN_BUFFER_PCT", 0.0005)
+BREAKEVEN_LOCK_R_MULT = _get_env_float("BREAKEVEN_LOCK_R_MULT", 0.5)
+# 본절 SL을 진입가 + (이 배수 × ATR) 근처로 (롱·숏 동일: 진입가 위쪽에 본절 라인)
+BREAKEVEN_ATR_MULT = _get_env_float("BREAKEVEN_ATR_MULT", 0.25)
 
 
 # ─────────────────────────────────────────────

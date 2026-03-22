@@ -31,7 +31,7 @@ from binance_client import (
 from config import (
     ATR_PERIOD,
     BASIS_SL_ATR_MULT,
-    BREAKEVEN_BUFFER_PCT,
+    BREAKEVEN_ATR_MULT,
     BREAKEVEN_LOCK_R_MULT,
     ENABLE_SERVER_STOP,
     ENTRY_SL_MIN_ATR_MULT,
@@ -719,8 +719,8 @@ def monitor_positions_loop() -> None:
                     pos["highest"] = max(float(pos["highest"]), mark)
                     # 소폭 이익 구간에서 본절 근처로 SL 끌어올림 (1R 전에도 적용)
                     if r_val > 0 and mark >= entry + BREAKEVEN_LOCK_R_MULT * r_val:
-                        be_floor = entry * (1.0 + BREAKEVEN_BUFFER_PCT)
-                        pos["trail_sl"] = max(float(pos["trail_sl"]), be_floor)
+                        be_line = entry + float(BREAKEVEN_ATR_MULT) * atr_used
+                        pos["trail_sl"] = max(float(pos["trail_sl"]), be_line)
                         pos["trail_active"] = True
                     if not bool(pos.get("trail_active", False)):
                         if r_val > 0 and mark >= entry + TRAIL_ACTIVATE_R_MULT * r_val:
@@ -739,9 +739,9 @@ def monitor_positions_loop() -> None:
                     r_val = float(pos.get("r_value", 0.0))
                     pos["lowest"] = min(float(pos["lowest"]), mark)
                     if r_val > 0 and mark <= entry - BREAKEVEN_LOCK_R_MULT * r_val:
-                        # 숏 SL은 진입가 위: 본절 = 진입가 + 아주 작은 버퍼
-                        be_near_entry = entry * (1.0 + BREAKEVEN_BUFFER_PCT)
-                        pos["trail_sl"] = min(float(pos["trail_sl"]), be_near_entry)
+                        # 숏 SL은 진입가 위: 본절 = 진입가 + ATR×배수 (롱과 동일한 가격 레벨 공식)
+                        be_line = entry + float(BREAKEVEN_ATR_MULT) * atr_used
+                        pos["trail_sl"] = min(float(pos["trail_sl"]), be_line)
                         pos["trail_active"] = True
                     if not bool(pos.get("trail_active", False)):
                         if r_val > 0 and mark <= entry - TRAIL_ACTIVATE_R_MULT * r_val:
