@@ -1,6 +1,7 @@
 import logging
 import json
 import os
+import statistics
 import sys
 import threading
 import time
@@ -28,18 +29,27 @@ from binance_client import (
 )
 from config import (
     ATR_PERIOD,
+    BASIS_SL_ATR_MULT,
+    BREAKEVEN_BUFFER_PCT,
+    BREAKEVEN_LOCK_R_MULT,
     ENABLE_SERVER_STOP,
+    ENTRY_SL_MIN_ATR_MULT,
     LIQ_STOP_BUFFER_PCT,
     LOCK_FILE,
     LOG_FILE,
     MAX_CONCURRENT_POSITIONS,
     POSITION_RISK_PCT,
     STREAM_BATCH_SIZE,
+    TRAIL_ACTIVATE_R_MULT,
+    TRAILING_ATR_MULT,
     UNIVERSE_GAINER_POOL,
     UNIVERSE_MAX_TICK_PCT,
     UNIVERSE_MAX_TOTAL,
     UNIVERSE_VOLUME_TOP_N,
     validate_secrets,
+    VOL_ATR_MEDIAN_MULT,
+    VOL_ATR_MEDIAN_WINDOW,
+    VOL_ATR_MIN_PCT_OF_CLOSE,
 )
 from indicators import TrendIndicatorComputer
 from state_manager import load_state, remove_position, save_state, upsert_position
@@ -58,6 +68,8 @@ rsi_history_map: Dict[str, Deque[float]] = {}
 adx_history_map: Dict[str, Deque[float]] = {}
 low_window_map: Dict[str, Deque[float]] = {}
 high_window_map: Dict[str, Deque[float]] = {}
+# 직전 VOL_ATR_MEDIAN_WINDOW봉의 ATR (현재 봉 제외, median 기준선용)
+atr_history_map: Dict[str, Deque[float]] = {}
 last_close_map: Dict[str, float] = {}
 last_rsi_map: Dict[str, Optional[float]] = {}
 active_positions: Dict[str, Dict[str, Any]] = {}
@@ -115,6 +127,49 @@ def _retry_call(fn, *args, **kwargs):
     return None
 
 
+def _compute_initial_sl(
+    direction: str,
+    entry_price: float,
+    atr_used: float,
+    basis_low: float,
+    basis_high: float,
+) -> float:
+    """
+    롱: min(기준봉저가 − BASIS×ATR, 진입가 − ENTRY_MIN×ATR) → 더 넓은 손절(가격 더 낮음).
+    숏: max(기준봉고가 + BASIS×ATR, 진입가 + ENTRY_MIN×ATR) → 더 넓은 손절(가격 더 높음).
+    """
+    buf = float(BASIS_SL_ATR_MULT)
+    k = float(ENTRY_SL_MIN_ATR_MULT)
+    if direction == "long":
+        sl_struct = float(basis_low) - (atr_used * buf)
+        sl_min = float(entry_price) - (atr_used * k)
+        return min(sl_struct, sl_min)
+    sl_struct = float(basis_high) + (atr_used * buf)
+    sl_min = float(entry_price) + (atr_used * k)
+    return max(sl_struct, sl_min)
+
+
+def _vol_atr_ok(symbol_upper: str, atr_val: Optional[float], close: float) -> bool:
+    """
+    현재 봉 ATR vs 직전 VOL_ATR_MEDIAN_WINDOW개 ATR의 중앙값 × 배수.
+    샘플이 창보다 적으면 통과(부트스트랩 직후만 해당).
+    VOL_ATR_MIN_PCT_OF_CLOSE > 0 이면 ATR/종가 하한(죽은 코인 컷).
+    """
+    if atr_val is None or atr_val <= 0 or close <= 0:
+        return False
+    dq = atr_history_map.setdefault(symbol_upper, deque(maxlen=VOL_ATR_MEDIAN_WINDOW))
+    if len(dq) < VOL_ATR_MEDIAN_WINDOW:
+        return True
+    med = statistics.median(dq)
+    if med <= 0:
+        return True
+    if float(atr_val) <= VOL_ATR_MEDIAN_MULT * med:
+        return False
+    if VOL_ATR_MIN_PCT_OF_CLOSE > 0 and (float(atr_val) / close) < VOL_ATR_MIN_PCT_OF_CLOSE:
+        return False
+    return True
+
+
 def _bootstrap_symbol_indicators(symbol_upper: str) -> None:
     comp = TrendIndicatorComputer(ema_period=200, atr_period=ATR_PERIOD, adx_period=ATR_PERIOD)
     ema_history_map[symbol_upper] = deque(maxlen=6)
@@ -122,6 +177,7 @@ def _bootstrap_symbol_indicators(symbol_upper: str) -> None:
     adx_history_map[symbol_upper] = deque(maxlen=6)
     low_window_map[symbol_upper] = deque(maxlen=10)
     high_window_map[symbol_upper] = deque(maxlen=10)
+    atr_history_map[symbol_upper] = deque(maxlen=VOL_ATR_MEDIAN_WINDOW)
     last_close_map.pop(symbol_upper, None)
     last_rsi_map[symbol_upper] = None
     klines = _retry_call(get_klines, symbol_upper, "1m", 500)
@@ -143,6 +199,8 @@ def _bootstrap_symbol_indicators(symbol_upper: str) -> None:
             adx_history_map[symbol_upper].append(float(values["adx"]))
         low_window_map[symbol_upper].append(low)
         high_window_map[symbol_upper].append(high)
+        if values.get("atr") is not None:
+            atr_history_map[symbol_upper].append(float(values["atr"]))
         last_close_map[symbol_upper] = close
         last_rsi_map[symbol_upper] = values["rsi"]
         _ = open_
@@ -375,7 +433,6 @@ def _ensure_server_stop_for_position(symbol_upper: str, pos: Dict[str, Any], for
 def _open_trade(symbol_upper: str, signal: Dict[str, Any]) -> None:
     direction = str(signal["direction"])
     atr_used = float(signal["atr_used"])
-    initial_sl = float(signal["initial_sl"])
     entry_mark = latest_price_map.get(symbol_upper)
     if entry_mark is None:
         return
@@ -401,10 +458,14 @@ def _open_trade(symbol_upper: str, signal: Dict[str, Any]) -> None:
     if not res:
         return
     entry_price = float(res["entry_price"])
+    basis_low = float(signal.get("basis_low", entry_price))
+    basis_high = float(signal.get("basis_high", entry_price))
+    initial_sl = _compute_initial_sl(direction, entry_price, atr_used, basis_low, basis_high)
+    min_buf = max(atr_used * BASIS_SL_ATR_MULT, atr_used * ENTRY_SL_MIN_ATR_MULT, entry_price * 0.001)
     if direction == "long" and initial_sl >= entry_price:
-        initial_sl = entry_price - (atr_used * 0.5)
+        initial_sl = entry_price - min_buf
     if direction == "short" and initial_sl <= entry_price:
-        initial_sl = entry_price + (atr_used * 0.5)
+        initial_sl = entry_price + min_buf
     pos_state = _build_position_state(symbol_upper, direction, entry_price, qty, atr_used, initial_sl)
     liq_px = _retry_call(get_liquidation_price, symbol_upper)
     if liq_px is not None:
@@ -476,8 +537,13 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
     with state_lock:
         if symbol_upper in active_positions:
             signal_state_map.pop(symbol_upper, None)
+            if values.get("atr") is not None:
+                atr_history_map.setdefault(symbol_upper, deque(maxlen=VOL_ATR_MEDIAN_WINDOW)).append(
+                    float(values["atr"])
+                )
             return
 
+    vol_ok = _vol_atr_ok(symbol_upper, values.get("atr"), close)
     prev_state = signal_state_map.get(symbol_upper)
     signal, next_state, event = decide_entry_signal(
         symbol_upper=symbol_upper,
@@ -495,7 +561,13 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
         state=prev_state,
         bar_index=idx,
         prev_close=prev_close,
+        vol_atr_ok=vol_ok,
     )
+
+    if values.get("atr") is not None:
+        atr_history_map.setdefault(symbol_upper, deque(maxlen=VOL_ATR_MEDIAN_WINDOW)).append(
+            float(values["atr"])
+        )
 
     if next_state:
         signal_state_map[symbol_upper] = next_state
@@ -531,17 +603,14 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
 
     atr_used = float(signal["atr_used"])
     direction = str(signal["direction"])
-    # 초기 SL: 기준봉 저가/고가 ± 0.5×ATR (구조 무효화)
-    if direction == "long":
-        basis_low = float(signal.get("basis_low", low))
-        initial_sl = basis_low - (atr_used * 0.5)
-    else:
-        basis_high = float(signal.get("basis_high", high))
-        initial_sl = basis_high + (atr_used * 0.5)
+    basis_low = float(signal.get("basis_low", low))
+    basis_high = float(signal.get("basis_high", high))
+    initial_sl = _compute_initial_sl(direction, close, atr_used, basis_low, basis_high)
+    min_buf = max(atr_used * BASIS_SL_ATR_MULT, atr_used * ENTRY_SL_MIN_ATR_MULT, close * 0.001)
     if direction == "long" and initial_sl >= close:
-        initial_sl = close - max(atr_used * 0.5, close * 0.001)
+        initial_sl = close - min_buf
     elif direction == "short" and initial_sl <= close:
-        initial_sl = close + max(atr_used * 0.5, close * 0.001)
+        initial_sl = close + min_buf
     signal["initial_sl"] = initial_sl
 
     with state_lock:
@@ -604,12 +673,19 @@ def monitor_positions_loop() -> None:
                 direction = str(pos["direction"])
                 atr_used = float(pos["atr_used"])
                 if direction == "long":
+                    entry = float(pos["entry_price"])
+                    r_val = float(pos.get("r_value", 0.0))
                     pos["highest"] = max(float(pos["highest"]), mark)
+                    # 소폭 이익 구간에서 본절 근처로 SL 끌어올림 (1R 전에도 적용)
+                    if r_val > 0 and mark >= entry + BREAKEVEN_LOCK_R_MULT * r_val:
+                        be_floor = entry * (1.0 + BREAKEVEN_BUFFER_PCT)
+                        pos["trail_sl"] = max(float(pos["trail_sl"]), be_floor)
+                        pos["trail_active"] = True
                     if not bool(pos.get("trail_active", False)):
-                        if mark >= (float(pos["entry_price"]) + float(pos.get("r_value", 0.0))):
+                        if r_val > 0 and mark >= entry + TRAIL_ACTIVATE_R_MULT * r_val:
                             pos["trail_active"] = True
                     if bool(pos.get("trail_active", False)):
-                        trail = pos["highest"] - (atr_used * 3.0)
+                        trail = float(pos["highest"]) - (atr_used * TRAILING_ATR_MULT)
                         pos["trail_sl"] = max(float(pos["trail_sl"]), trail)
                     stop_price = max(float(pos["initial_sl"]), float(pos["trail_sl"])) if bool(pos.get("trail_active", False)) else float(pos["initial_sl"])
                     if abs(stop_price - float(pos.get("server_stop_price", 0.0))) > 1e-9:
@@ -618,12 +694,19 @@ def monitor_positions_loop() -> None:
                     if mark <= stop_price:
                         _close_and_cleanup(sym, pos, "SL/TRAIL", mark)
                 else:
+                    entry = float(pos["entry_price"])
+                    r_val = float(pos.get("r_value", 0.0))
                     pos["lowest"] = min(float(pos["lowest"]), mark)
+                    if r_val > 0 and mark <= entry - BREAKEVEN_LOCK_R_MULT * r_val:
+                        # 숏 SL은 진입가 위: 본절 = 진입가 + 아주 작은 버퍼
+                        be_near_entry = entry * (1.0 + BREAKEVEN_BUFFER_PCT)
+                        pos["trail_sl"] = min(float(pos["trail_sl"]), be_near_entry)
+                        pos["trail_active"] = True
                     if not bool(pos.get("trail_active", False)):
-                        if mark <= (float(pos["entry_price"]) - float(pos.get("r_value", 0.0))):
+                        if r_val > 0 and mark <= entry - TRAIL_ACTIVATE_R_MULT * r_val:
                             pos["trail_active"] = True
                     if bool(pos.get("trail_active", False)):
-                        trail = pos["lowest"] + (atr_used * 3.0)
+                        trail = float(pos["lowest"]) + (atr_used * TRAILING_ATR_MULT)
                         pos["trail_sl"] = min(float(pos["trail_sl"]), trail)
                     stop_price = min(float(pos["initial_sl"]), float(pos["trail_sl"])) if bool(pos.get("trail_active", False)) else float(pos["initial_sl"])
                     if abs(stop_price - float(pos.get("server_stop_price", 0.0))) > 1e-9:

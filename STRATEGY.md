@@ -21,6 +21,9 @@
 
 ### 공통
 
+- **변동성 필터:** 현재 봉 `ATR` > **`VOL_ATR_MEDIAN_MULT` × median(직전 `VOL_ATR_MEDIAN_WINDOW`개 봉의 ATR)**.  
+  직전 샘플이 창보다 적으면(부트스트랩 직후 등) **통과**.  
+  `VOL_ATR_MIN_PCT_OF_CLOSE` > 0 이면 추가로 **`ATR/종가` ≥ 이 값** (초저변동 컷). `0`이면 하한 없음.
 - **EMA200**·**RSI**·**ADX** 는 **5봉 전 값과 순수 대소 비교** (최소 0.1% 기울기 없음).
 - **ADX** 현재값 ≥ **25** (`ADX_MIN`).
 - **ADX**는 롱·숏 모두 **5봉 전보다 큼**: `ADX > ADX(5봉 전)`.
@@ -44,16 +47,21 @@
 ## 4. 진입 (기준봉 이후)
 
 - **눌림·추격 없음** — 상태는 **IDLE ↔ BREAKOUT** 만 사용.
-- **롱:** `종가 > 기준봉 고가` / **숏:** `종가 < 기준봉 저가`
+- **롱:** `종가 > 기준봉 고가` 이고 **그 봉도 변동성 필터 통과** / **숏:** `종가 < 기준봉 저가` 이고 동일.
 - 타임아웃·EMA 무효·반대 기준봉 → `STATE_RESET`
 
 ## 5. 초기 손절
 
-- **롱:** `기준봉 저가 − 0.5 × ATR` / **숏:** `기준봉 고가 + 0.5 × ATR`
+- **구조 SL:** **롱** `기준봉 저가 − BASIS_SL_ATR_MULT × ATR` / **숏** `기준봉 고가 + BASIS_SL_ATR_MULT × ATR` (기본 `BASIS_SL_ATR_MULT` = 0.5).
+- **진입가 최소 거리:** **롱** `진입가 − ENTRY_SL_MIN_ATR_MULT × ATR` / **숏** `진입가 + ENTRY_SL_MIN_ATR_MULT × ATR` (기본 1.0).
+- **최종 초기 SL:** 둘 중 **손절이 더 넓은 쪽** — 롱은 가격이 **더 낮은** 값, 숏은 **더 높은** 값 (`min` / `max`).
+- 진입가(또는 종가) 반대편으로 SL이 넘어가면 `max(BASIS×ATR, ENTRY_MIN×ATR, 가격×0.1%)` 로 한 번 더 보정.
 
-## 6. 청산
+## 6. 청산 (`main.py` 모니터 루프)
 
-- 기존 `main.py` 모니터 루프(초기 SL·트레일 등).
+- **초기 SL** 위반 또는 **트레일 SL** 위반 시 시장가 청산.
+- **본절 잠금:** 마크가 진입가에서 **유리한 방향으로 `R × BREAKEVEN_LOCK_R_MULT`**(기본 0.35) 이상 움직이면, 손절선을 **진입가 ± 소량 버퍼**까지 끌어올림 → 이익 후 초기 SL까지 전부 반납하는 경우 완화.
+- **트레일 ON:** **`R × TRAIL_ACTIVATE_R_MULT`**(기본 0.5, 예전은 1R) 도달 시부터 고점/저점 기준 **`TRAILING_ATR_MULT × ATR`** 트레일 적용.
 
 ## 7. 환경변수 요약
 
@@ -66,3 +74,12 @@
 | `STATE_TIMEOUT_BARS` | 기준봉 이후 진입 대기 최대 봉 수 (기본 7) |
 | `ADX_MIN` | ADX 하한 (기본 25) |
 | `RSI_LONG_MIN` / `RSI_SHORT_MAX` | 60 / 32 |
+| `VOL_ATR_MEDIAN_WINDOW` | ATR 중앙값 창 (기본 20) |
+| `VOL_ATR_MEDIAN_MULT` | 현재 ATR / 중앙값 배수 (기본 1.15) |
+| `VOL_ATR_MIN_PCT_OF_CLOSE` | ATR/종가 최소 (기본 0.0002, 0=끔) |
+| `BASIS_SL_ATR_MULT` | 기준봉 구조 SL에 쓰는 ATR 배수 (기본 0.5) |
+| `ENTRY_SL_MIN_ATR_MULT` | 진입가에서 최소 손절 거리 ATR 배수 (기본 1.0) |
+| `TRAIL_ACTIVATE_R_MULT` | 트레일 시작까지 필요한 R 비율 (기본 0.5) |
+| `BREAKEVEN_LOCK_R_MULT` | 본절 잠금까지 필요한 R 비율 (기본 0.35) |
+| `BREAKEVEN_BUFFER_PCT` | 본절가를 진입가에서 얼마나 벌릴지 (기본 0.0005) |
+| `TRAILING_ATR_MULT` | 트레일 거리 = ATR×배수 (기본 3) |

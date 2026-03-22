@@ -67,7 +67,7 @@ def main() -> None:
             "의도: 잔고의 1%만 투입 마진으로 사용",
         ]),
         ("5) 손절/청산", [
-            "초기 SL: long entry - atr_used*INITIAL_SL_ATR_MULT / short entry + atr_used*INITIAL_SL_ATR_MULT",
+            "초기 SL: min(기준봉저가-BASIS×ATR, 진입가-ENTRY_MIN×ATR) 롱 / 숏은 max 대칭",
             "트레일: long은 highest 기반 상향, short은 lowest 기반 하향",
             "청산: stop_price 터치 시 시장가 청산",
             "현재 서버 STOP 주문은 기본 OFF (계정 호환 이슈 -4120 회피)",

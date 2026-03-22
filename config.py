@@ -87,6 +87,12 @@ RSI_LONG_MIN = _get_env_float("RSI_LONG_MIN", 60.0)
 RSI_SHORT_MAX = _get_env_float("RSI_SHORT_MAX", 32.0)
 ATR_SPIKE_CAP_MULT = _get_env_float("ATR_SPIKE_CAP_MULT", 1.8)
 
+# 변동성 필터: 직전 N봉 ATR의 중앙값 대비 확장 + (선택) ATR/종가 하한
+VOL_ATR_MEDIAN_WINDOW = _get_env_int("VOL_ATR_MEDIAN_WINDOW", 20)
+VOL_ATR_MEDIAN_MULT = _get_env_float("VOL_ATR_MEDIAN_MULT", 1.15)
+# ATR/종가 ≥ 이 값일 때만 진입 (초저변동 컷). 0 이면 비활성.
+VOL_ATR_MIN_PCT_OF_CLOSE = _get_env_float("VOL_ATR_MIN_PCT_OF_CLOSE", 0.0002)
+
 # Default ATR floor (for symbols not listed in ATR_MIN_BY_SYMBOL)
 DEFAULT_ATR_MIN = _get_env_float("DEFAULT_ATR_MIN", 0.0)
 
@@ -95,8 +101,18 @@ DEFAULT_ATR_MIN = _get_env_float("DEFAULT_ATR_MIN", 0.0)
 ATR_MIN_BY_SYMBOL = {}
 
 # Stops / trailing
-INITIAL_SL_ATR_MULT = _get_env_float("INITIAL_SL_ATR_MULT", 2.3)
-TRAILING_ATR_MULT = _get_env_float("TRAILING_ATR_MULT", 4.0)
+# 기준봉 저/고에서 구조 SL 버퍼: 저가 − BASIS_SL_ATR_MULT×ATR (롱) 등
+BASIS_SL_ATR_MULT = _get_env_float("BASIS_SL_ATR_MULT", 0.5)
+# 진입가에서 최소 이 ATR 배수만큼은 손절 거리 보장 (롱: entry − k×ATR, 숏: entry + k×ATR)
+ENTRY_SL_MIN_ATR_MULT = _get_env_float("ENTRY_SL_MIN_ATR_MULT", 1.0)
+# 고점/저점에서 이 ATR 배수만큼 떨어진 곳에 트레일 SL (main.py 모니터 루프)
+TRAILING_ATR_MULT = _get_env_float("TRAILING_ATR_MULT", 3.0)
+
+# 트레일 ON: 진입가 ± (R × 이 배수) 도달 시 (기본 0.5 = 반 R부터 ATR 트레일 계산)
+TRAIL_ACTIVATE_R_MULT = _get_env_float("TRAIL_ACTIVATE_R_MULT", 0.5)
+# 본절 잠금: 진입가 ± (R × 이 배수) 도달 시 손절선을 진입가 근처로 끌어올림 (수익 후 전부 반납 완화)
+BREAKEVEN_LOCK_R_MULT = _get_env_float("BREAKEVEN_LOCK_R_MULT", 0.35)
+BREAKEVEN_BUFFER_PCT = _get_env_float("BREAKEVEN_BUFFER_PCT", 0.0005)
 
 
 # ─────────────────────────────────────────────
