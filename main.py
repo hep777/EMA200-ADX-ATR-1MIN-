@@ -1,7 +1,4 @@
-"""
-레거시 진입점 — RSI 다이버전스 전략은 `bot.py`에서 실행합니다.
-systemd ExecStart가 main.py를 가리키는 경우 그대로 동작합니다.
-"""
+"""진입점: python3 main.py 또는 python3 bot.py 동일."""
 
 from bot import main
 

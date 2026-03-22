@@ -20,6 +20,50 @@ from config import (
 logger = logging.getLogger("binance")
 BASE_URL = "https://fapi.binance.com"
 
+# 마지막 주문 API 실패 메시지 (텔레그램 안내용)
+LAST_BINANCE_ORDER_ERROR: Optional[str] = None
+
+# GET /fapi/v1/positionSide/dual 결과 캐시 (5분)
+_dual_side_cache: Optional[bool] = None
+_dual_side_cache_ts: float = 0.0
+
+
+def clear_last_order_error() -> None:
+    global LAST_BINANCE_ORDER_ERROR
+    LAST_BINANCE_ORDER_ERROR = None
+
+
+def get_last_order_error() -> Optional[str]:
+    return LAST_BINANCE_ORDER_ERROR
+
+
+def is_dual_side_position() -> bool:
+    """
+    True = 헤지(양방향) 모드 → 주문에 positionSide(LONG/SHORT) 필요.
+    False = 단방향(One-way).
+    """
+    global _dual_side_cache, _dual_side_cache_ts
+    now = time.time()
+    if _dual_side_cache is not None and (now - _dual_side_cache_ts) < 300.0:
+        return _dual_side_cache
+    data = _request("GET", "/fapi/v1/positionSide/dual", {})
+    if not data:
+        _dual_side_cache = False
+        _dual_side_cache_ts = now
+        return False
+    _dual_side_cache = bool(data.get("dualSidePosition"))
+    _dual_side_cache_ts = now
+    logger.info("Futures position mode: dual_side=%s", _dual_side_cache)
+    return _dual_side_cache
+
+
+def _position_side_params(direction: str) -> Dict[str, Any]:
+    """direction: 'long' | 'short' — 헤지 모드일 때만 positionSide 추가."""
+    if not is_dual_side_position():
+        return {}
+    ps = "LONG" if direction == "long" else "SHORT"
+    return {"positionSide": ps}
+
 
 def _sign(params: Dict[str, Any]) -> Dict[str, Any]:
     query_string = urlencode(params)
@@ -69,12 +113,19 @@ def _request(
         return None
 
     if resp.status_code != 200:
+        global LAST_BINANCE_ORDER_ERROR
         err_code: Optional[int] = None
         if isinstance(data, dict):
             try:
                 err_code = int(data.get("code"))
             except (TypeError, ValueError):
                 err_code = None
+            try:
+                LAST_BINANCE_ORDER_ERROR = f"code={data.get('code')} msg={data.get('msg')}"
+            except Exception:
+                LAST_BINANCE_ORDER_ERROR = str(data)
+        else:
+            LAST_BINANCE_ORDER_ERROR = str(data)[:500]
         if ignore_binance_error_codes and err_code in ignore_binance_error_codes:
             logger.debug("API %s ignored (code=%s): %s", resp.status_code, err_code, data)
             return None
@@ -534,6 +585,7 @@ def open_position_market(symbol_lower: str, direction: str, quantity: float) -> 
             "side": side,
             "type": "MARKET",
             "quantity": qty,
+            **_position_side_params(direction),
         },
     )
     if not order:
@@ -570,6 +622,7 @@ def close_position_market(symbol_lower: str, direction: str, quantity: float) ->
             "type": "MARKET",
             "quantity": quantity,
             "reduceOnly": "true",
+            **_position_side_params(direction),
         },
     )
     return order
@@ -579,8 +632,9 @@ def place_reduce_only_stop_market(
     symbol: str, direction: str, stop_price: float, quantity: float
 ) -> Optional[Dict[str, Any]]:
     side = "SELL" if direction == "long" else "BUY"
-    # Primary: reduceOnly + quantity (widely compatible)
     sp = round_price_to_tick(symbol, float(stop_price))
+    ps = _position_side_params(direction)
+    # Primary: reduceOnly + quantity (widely compatible)
     primary = _request(
         "POST",
         "/fapi/v1/order",
@@ -592,12 +646,33 @@ def place_reduce_only_stop_market(
             "quantity": quantity,
             "reduceOnly": "true",
             "workingType": "MARK_PRICE",
+            **ps,
         },
     )
     if primary is not None:
         return primary
 
+    # Fallback: CONTRACT_PRICE trigger
+    clear_last_order_error()
+    secondary = _request(
+        "POST",
+        "/fapi/v1/order",
+        {
+            "symbol": symbol,
+            "side": side,
+            "type": "STOP_MARKET",
+            "stopPrice": sp,
+            "quantity": quantity,
+            "reduceOnly": "true",
+            "workingType": "CONTRACT_PRICE",
+            **ps,
+        },
+    )
+    if secondary is not None:
+        return secondary
+
     # Fallback: closePosition mode (some account modes require this)
+    clear_last_order_error()
     return _request(
         "POST",
         "/fapi/v1/order",
@@ -608,6 +683,7 @@ def place_reduce_only_stop_market(
             "stopPrice": sp,
             "workingType": "MARK_PRICE",
             "closePosition": "true",
+            **ps,
         },
     )
 
@@ -641,6 +717,7 @@ def place_take_profit_market(
     """Reduce-only take-profit (MARK_PRICE trigger)."""
     side = "SELL" if direction == "long" else "BUY"
     px = round_price_to_tick(symbol, float(tp_price))
+    ps = _position_side_params(direction)
     primary = _request(
         "POST",
         "/fapi/v1/order",
@@ -652,10 +729,31 @@ def place_take_profit_market(
             "quantity": quantity,
             "reduceOnly": "true",
             "workingType": "MARK_PRICE",
+            **ps,
         },
     )
     if primary is not None:
         return primary
+
+    clear_last_order_error()
+    secondary = _request(
+        "POST",
+        "/fapi/v1/order",
+        {
+            "symbol": symbol,
+            "side": side,
+            "type": "TAKE_PROFIT_MARKET",
+            "stopPrice": px,
+            "quantity": quantity,
+            "reduceOnly": "true",
+            "workingType": "CONTRACT_PRICE",
+            **ps,
+        },
+    )
+    if secondary is not None:
+        return secondary
+
+    clear_last_order_error()
     return _request(
         "POST",
         "/fapi/v1/order",
@@ -666,6 +764,7 @@ def place_take_profit_market(
             "stopPrice": px,
             "workingType": "MARK_PRICE",
             "closePosition": "true",
+            **ps,
         },
     )
 
