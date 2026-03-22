@@ -42,11 +42,13 @@
 - `RSI ≤ 32` (`RSI_SHORT_MAX`)
 - `RSI < RSI(5봉 전)`
 
-기준봉에서 **고가·저가·종가**를 저장하고, 이후 **최대 `STATE_TIMEOUT_BARS`봉**(기본 **7**) 안에서만 진입 가능.
+기준봉에서 **고가·저가·종가**를 저장하고, 이후 **최대 봉 수 안에서만** 진입 가능 — **일반** 기준봉은 **`STATE_TIMEOUT_BARS`**(기본 **7**), **폭발** 기준봉(`explosive_basis`)은 **`EXPLOSIVE_TIMEOUT_BARS`**(기본 **12**, 대기봉 포함).
 
 ## 4. 진입 (기준봉 이후)
 
 - **눌림·추격 없음** — 상태는 **IDLE ↔ BREAKOUT** 만 사용.
+- **폭발 기준봉:** 등록 시 `ATR > 직전 N봉 ATR 중앙값 × EXPLOSIVE_ATR_MULT` 이면 `explosive_basis=True`, `explosive_wait_bars=EXPLOSIVE_WAIT_BARS`. **기준봉 이후 그 봉 수만큼** 돌파여도 **진입 무시**. 타임아웃은 **`EXPLOSIVE_TIMEOUT_BARS`**(기본 12) — **대기봉이 이 안에 포함**(예: 대기 2 + 이후 10봉 안 미진입 시 리셋). **일반** 기준봉은 타임아웃 **`STATE_TIMEOUT_BARS`(7)** 유지.
+- **과열 진입:** 진입 직전(현재봉) `ATR > 중앙값 × OVERHEATED_ATR_MULT` 이면 해당 진입만 `POSITION_RISK_PCT × OVERHEATED_RISK_RATIO` 로 **마진 축소**.
 - **롱:** `종가 > 기준봉 고가` 이고 **그 봉도 변동성 필터 통과** / **숏:** `종가 < 기준봉 저가` 이고 동일.
 - 타임아웃·EMA 무효·반대 기준봉 → `STATE_RESET`
 
@@ -78,6 +80,11 @@
 | `VOL_ATR_MEDIAN_WINDOW` | ATR 중앙값 창 (기본 20) |
 | `VOL_ATR_MEDIAN_MULT` | 현재 ATR / 중앙값 배수 (기본 1.15) |
 | `VOL_ATR_MIN_PCT_OF_CLOSE` | ATR/종가 최소 (기본 0.0002, 0=끔) |
+| `EXPLOSIVE_ATR_MULT` | 폭발 기준봉: ATR > 중앙값×배수 (기본 2.5) |
+| `EXPLOSIVE_WAIT_BARS` | 폭발 시 기준봉 이후 진입 금지 봉 수 (기본 2) |
+| `EXPLOSIVE_TIMEOUT_BARS` | 폭발 기준봉 전용 진입 대기 최대 봉 수, 대기 포함 (기본 12) |
+| `OVERHEATED_ATR_MULT` | 과열: ATR > 중앙값×배수 시 위험 축소 (기본 3) |
+| `OVERHEATED_RISK_RATIO` | 과열 시 `POSITION_RISK_PCT`에 곱함 (기본 0.5) |
 | `BASIS_SL_ATR_MULT` | 기준봉 구조 SL에 쓰는 ATR 배수 (기본 0.5) |
 | `ENTRY_SL_MIN_ATR_MULT` | 진입가에서 최소 손절 거리 ATR 배수 (기본 1.0) |
 | `TRAIL_ACTIVATE_R_MULT` | 트레일 시작까지 필요한 R 비율 (기본 0.6) |

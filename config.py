@@ -93,6 +93,15 @@ VOL_ATR_MEDIAN_MULT = _get_env_float("VOL_ATR_MEDIAN_MULT", 1.15)
 # ATR/종가 ≥ 이 값일 때만 진입 (초저변동 컷). 0 이면 비활성.
 VOL_ATR_MIN_PCT_OF_CLOSE = _get_env_float("VOL_ATR_MIN_PCT_OF_CLOSE", 0.0002)
 
+# 폭발봉: 현재봉 ATR > 직전 N봉 ATR 중앙값 × 이 배수 → 기준봉 등록 시 explosive_basis, 이후 WAIT봉 동안 진입 무시
+EXPLOSIVE_ATR_MULT = _get_env_float("EXPLOSIVE_ATR_MULT", 2.5)
+EXPLOSIVE_WAIT_BARS = _get_env_int("EXPLOSIVE_WAIT_BARS", 2)
+# 폭발 기준봉 전용 타임아웃(봉 수, 대기봉 포함). 일반 기준봉은 STATE_TIMEOUT_BARS 사용.
+EXPLOSIVE_TIMEOUT_BARS = _get_env_int("EXPLOSIVE_TIMEOUT_BARS", 12)
+# 과열: 진입 직전 ATR이 중앙값×배수 초과 시 POSITION_RISK_PCT에 OVERHEATED_RISK_RATIO 곱
+OVERHEATED_ATR_MULT = _get_env_float("OVERHEATED_ATR_MULT", 3.0)
+OVERHEATED_RISK_RATIO = _get_env_float("OVERHEATED_RISK_RATIO", 0.5)
+
 # Default ATR floor (for symbols not listed in ATR_MIN_BY_SYMBOL)
 DEFAULT_ATR_MIN = _get_env_float("DEFAULT_ATR_MIN", 0.0)
 

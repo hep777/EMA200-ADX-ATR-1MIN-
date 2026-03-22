@@ -35,12 +35,16 @@ from config import (
     BREAKEVEN_LOCK_R_MULT,
     ENABLE_SERVER_STOP,
     ENTRY_SL_MIN_ATR_MULT,
+    EXPLOSIVE_ATR_MULT,
+    EXPLOSIVE_WAIT_BARS,
     LIQ_STOP_BUFFER_PCT,
     LOCK_FILE,
     LOG_FILE,
     MARK_PRICE_REST_MIN_INTERVAL_SEC,
     MARK_PRICE_WS_STALE_SEC,
     MAX_CONCURRENT_POSITIONS,
+    OVERHEATED_ATR_MULT,
+    OVERHEATED_RISK_RATIO,
     POSITION_RISK_PCT,
     STREAM_BATCH_SIZE,
     TRAIL_ACTIVATE_R_MULT,
@@ -209,6 +213,34 @@ def _vol_atr_ok(symbol_upper: str, atr_val: Optional[float], close: float) -> bo
     if VOL_ATR_MIN_PCT_OF_CLOSE > 0 and (float(atr_val) / close) < VOL_ATR_MIN_PCT_OF_CLOSE:
         return False
     return True
+
+
+def _atr_median_prev_window(symbol_upper: str):
+    """직전 VOL_ATR_MEDIAN_WINDOW개 봉 ATR (현재 봉 append 전 deque 기준)."""
+    dq = atr_history_map.get(symbol_upper)
+    if not dq or len(dq) < VOL_ATR_MEDIAN_WINDOW:
+        return None
+    return statistics.median(dq)
+
+
+def _explosive_atr_basis(symbol_upper: str, atr_val: Optional[float]) -> bool:
+    """현재봉 ATR > 중앙값 × EXPLOSIVE_ATR_MULT 이면 폭발 기준봉."""
+    if atr_val is None or atr_val <= 0:
+        return False
+    med = _atr_median_prev_window(symbol_upper)
+    if med is None or med <= 0:
+        return False
+    return float(atr_val) > float(EXPLOSIVE_ATR_MULT) * med
+
+
+def _overheated_atr(symbol_upper: str, atr_val: Optional[float]) -> bool:
+    """현재봉 ATR > 중앙값 × OVERHEATED_ATR_MULT 이면 과열 진입."""
+    if atr_val is None or atr_val <= 0:
+        return False
+    med = _atr_median_prev_window(symbol_upper)
+    if med is None or med <= 0:
+        return False
+    return float(atr_val) > float(OVERHEATED_ATR_MULT) * med
 
 
 def _bootstrap_symbol_indicators(symbol_upper: str) -> None:
@@ -481,9 +513,9 @@ def _open_trade(symbol_upper: str, signal: Dict[str, Any]) -> None:
         return
 
     # POSITION_RISK_PCT is "투입 마진 비율" (equity의 1%만 사용)
-    # => margin_usdt = equity * POSITION_RISK_PCT
-    # => qty is derived from margin_usdt * leverage / mark_price
-    margin_usdt = get_account_equity_usdt() * POSITION_RISK_PCT
+    # => margin_usdt = equity * POSITION_RISK_PCT * risk_multiplier (과열 시 축소)
+    risk_mult = float(signal.get("risk_multiplier", 1.0))
+    margin_usdt = get_account_equity_usdt() * POSITION_RISK_PCT * risk_mult
 
     # leverage 기반으로 qty 계산을 위해 먼저 레버리지 세팅/확인을 수행
     leverage = set_isolated_and_leverage(symbol_upper)
@@ -605,6 +637,15 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
         vol_atr_ok=vol_ok,
     )
 
+    if event == "BREAKOUT" and next_state:
+        next_state["explosive_basis"] = _explosive_atr_basis(symbol_upper, values.get("atr"))
+        if next_state["explosive_basis"]:
+            next_state["explosive_wait_bars"] = int(EXPLOSIVE_WAIT_BARS)
+
+    risk_mult = 1.0
+    if signal and values.get("atr") is not None:
+        risk_mult = float(OVERHEATED_RISK_RATIO) if _overheated_atr(symbol_upper, values.get("atr")) else 1.0
+
     if values.get("atr") is not None:
         atr_history_map.setdefault(symbol_upper, deque(maxlen=VOL_ATR_MEDIAN_WINDOW)).append(
             float(values["atr"])
@@ -667,6 +708,7 @@ def process_kline(symbol_lower: str, kline: Dict[str, Any]) -> None:
         symbol_upper,
         close,
     )
+    signal["risk_multiplier"] = risk_mult
     _open_trade(symbol_upper, signal)
 
 

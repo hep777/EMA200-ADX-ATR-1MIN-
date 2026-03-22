@@ -2,6 +2,8 @@ from typing import Dict, Optional
 
 from config import (
     ADX_MIN,
+    EXPLOSIVE_TIMEOUT_BARS,
+    EXPLOSIVE_WAIT_BARS,
     RSI_LONG_MIN,
     RSI_SHORT_MAX,
     STATE_TIMEOUT_BARS,
@@ -96,7 +98,9 @@ def decide_entry_signal(
     if state and phase == BREAKOUT:
         basis_bar = int(state.get("basis_bar", bar_index))
         direction = str(state.get("direction", ""))
-        timed_out = (bar_index - basis_bar) > STATE_TIMEOUT_BARS
+        explosive = bool(state.get("explosive_basis", False))
+        timeout_limit = int(EXPLOSIVE_TIMEOUT_BARS) if explosive else int(STATE_TIMEOUT_BARS)
+        timed_out = (bar_index - basis_bar) > timeout_limit
         ema_invalid = (direction == "long" and close_price <= ema) or (direction == "short" and close_price >= ema)
         opposite_signal = (direction == "long" and short_basis) or (direction == "short" and long_basis)
 
@@ -106,9 +110,18 @@ def decide_entry_signal(
         if opposite_signal:
             state = None
         else:
+            bars_since_basis = bar_index - basis_bar
+            ew = int(state.get("explosive_wait_bars", EXPLOSIVE_WAIT_BARS))
+            in_explosive_wait = (
+                explosive
+                and bars_since_basis > 0
+                and bars_since_basis <= ew
+            )
             if direction == "long":
                 breakout_high = float(state.get("breakout_high", 0.0))
                 if close_price > breakout_high and vol_atr_ok:
+                    if in_explosive_wait:
+                        return None, state, None
                     return (
                         {
                             "direction": "long",
@@ -122,6 +135,8 @@ def decide_entry_signal(
             elif direction == "short":
                 breakout_low = float(state.get("breakout_low", 0.0))
                 if close_price < breakout_low and vol_atr_ok:
+                    if in_explosive_wait:
+                        return None, state, None
                     return (
                         {
                             "direction": "short",
