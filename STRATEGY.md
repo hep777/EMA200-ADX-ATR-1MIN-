@@ -59,6 +59,7 @@
 
 ## 6. 청산 (`main.py` 모니터 루프)
 
+- **마크 가격:** 기본은 WS kline 종가. **끊김·지연**으로 종가가 `MARK_PRICE_WS_STALE_SEC`(초) 이상 갱신되지 않으면 **REST 마크**로 보완(심볼당 `MARK_PRICE_REST_MIN_INTERVAL_SEC` 간격으로 호출 제한). `MARK_PRICE_WS_STALE_SEC=0`이면 WS 값이 있을 때만 WS를 쓰고, 없을 때만 REST.
 - **초기 SL** 위반 또는 **트레일 SL** 위반 시 시장가 청산.
 - **본절 잠금:** 마크가 진입가에서 **유리한 방향으로 `R × BREAKEVEN_LOCK_R_MULT`**(기본 0.35) 이상 움직이면, 손절선을 **진입가 ± 소량 버퍼**까지 끌어올림 → 이익 후 초기 SL까지 전부 반납하는 경우 완화.
 - **트레일 ON:** **`R × TRAIL_ACTIVATE_R_MULT`**(기본 0.5, 예전은 1R) 도달 시부터 고점/저점 기준 **`TRAILING_ATR_MULT × ATR`** 트레일 적용.
@@ -83,3 +84,7 @@
 | `BREAKEVEN_LOCK_R_MULT` | 본절 잠금까지 필요한 R 비율 (기본 0.35) |
 | `BREAKEVEN_BUFFER_PCT` | 본절가를 진입가에서 얼마나 벌릴지 (기본 0.0005) |
 | `TRAILING_ATR_MULT` | 트레일 거리 = ATR×배수 (기본 3) |
+| `MARK_PRICE_WS_STALE_SEC` | WS 종가가 이 초 이상 안 오면 REST 마크 사용 (0=WS 없을 때만 REST) |
+| `MARK_PRICE_REST_MIN_INTERVAL_SEC` | 심볼당 REST 마크 최소 간격(초) |
+| `WS_DISCONNECT_TELEGRAM_COOLDOWN_SEC` | WS 끊김 텔레그램 알림 최소 간격(초, 0=매번) |
+| `WEBSOCKET_PING_INTERVAL` / `WEBSOCKET_PING_TIMEOUT` | `run_forever` ping 설정(초) |

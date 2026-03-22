@@ -158,6 +158,15 @@ LIQ_STOP_BUFFER_PCT = _get_env_float("LIQ_STOP_BUFFER_PCT", 0.002)
 
 STREAM_BATCH_SIZE = _get_env_int("STREAM_BATCH_SIZE", 200)
 
+# WS 마크가 이 초 이상 갱신 없으면 포지션 감시에 REST 마크 사용 (0 = 갱신 없음일 때만 REST)
+MARK_PRICE_WS_STALE_SEC = _get_env_float("MARK_PRICE_WS_STALE_SEC", 30.0)
+# 심볼당 REST 마크 최소 호출 간격(초) — 레이트리밋 완화
+MARK_PRICE_REST_MIN_INTERVAL_SEC = _get_env_float("MARK_PRICE_REST_MIN_INTERVAL_SEC", 3.0)
+# 연결 끊김 텔레그램 알람 최소 간격(초). 0 이면 매번 전송
+WS_DISCONNECT_TELEGRAM_COOLDOWN_SEC = _get_env_float("WS_DISCONNECT_TELEGRAM_COOLDOWN_SEC", 180.0)
+WEBSOCKET_PING_INTERVAL = _get_env_int("WEBSOCKET_PING_INTERVAL", 30)
+WEBSOCKET_PING_TIMEOUT = _get_env_int("WEBSOCKET_PING_TIMEOUT", 20)
+
 
 # ─────────────────────────────────────────────
 # Runtime

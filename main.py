@@ -7,7 +7,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import websocket
 
@@ -20,6 +20,7 @@ from binance_client import (
     get_klines,
     get_liquidation_price,
     get_liquidation_prices_map,
+    get_mark_price,
     get_open_orders,
     get_open_positions,
     get_combined_universe_symbols,
@@ -37,6 +38,8 @@ from config import (
     LIQ_STOP_BUFFER_PCT,
     LOCK_FILE,
     LOG_FILE,
+    MARK_PRICE_REST_MIN_INTERVAL_SEC,
+    MARK_PRICE_WS_STALE_SEC,
     MAX_CONCURRENT_POSITIONS,
     POSITION_RISK_PCT,
     STREAM_BATCH_SIZE,
@@ -50,6 +53,9 @@ from config import (
     VOL_ATR_MEDIAN_MULT,
     VOL_ATR_MEDIAN_WINDOW,
     VOL_ATR_MIN_PCT_OF_CLOSE,
+    WEBSOCKET_PING_INTERVAL,
+    WEBSOCKET_PING_TIMEOUT,
+    WS_DISCONNECT_TELEGRAM_COOLDOWN_SEC,
 )
 from indicators import TrendIndicatorComputer
 from state_manager import load_state, remove_position, save_state, upsert_position
@@ -76,6 +82,12 @@ active_positions: Dict[str, Dict[str, Any]] = {}
 tracked_symbols: List[str] = []
 last_protection_sync_ts = 0.0
 latest_price_map: Dict[str, float] = {}
+# WS kline 종가 마지막 수신 시각 (포지션 감시 시 stale 판단)
+latest_ws_price_ts: Dict[str, float] = {}
+# REST 마크 캐시: 심볼 -> (가격, epoch)
+_mark_rest_cache: Dict[str, Tuple[float, float]] = {}
+_last_ws_disconnect_notify_ts = 0.0
+_ws_disconnect_notify_lock = threading.Lock()
 KST = timezone(timedelta(hours=9))
 _last_exchange_reconcile_ts = 0.0
 
@@ -147,6 +159,35 @@ def _compute_initial_sl(
     sl_struct = float(basis_high) + (atr_used * buf)
     sl_min = float(entry_price) + (atr_used * k)
     return max(sl_struct, sl_min)
+
+
+def _mark_for_position_monitor(symbol_upper: str) -> Optional[float]:
+    """
+    포지션 손절/트레일용 마크: WS 종가가 최신이면 사용, 오래됐거나 없으면 REST 마크.
+    """
+    now = time.time()
+    ws_px = latest_price_map.get(symbol_upper)
+    ws_ts = latest_ws_price_ts.get(symbol_upper, 0.0)
+    stale_sec = float(MARK_PRICE_WS_STALE_SEC)
+    if ws_px is not None and stale_sec > 0 and (now - ws_ts) <= stale_sec:
+        return float(ws_px)
+    if ws_px is not None and stale_sec <= 0:
+        return float(ws_px)
+
+    cached = _mark_rest_cache.get(symbol_upper)
+    min_iv = float(MARK_PRICE_REST_MIN_INTERVAL_SEC)
+    if cached is not None and min_iv > 0 and (now - cached[1]) < min_iv:
+        return float(cached[0])
+
+    try:
+        px = float(get_mark_price(symbol_upper))
+    except Exception as e:
+        logger.warning(f"REST mark failed {symbol_upper}: {e}")
+        px = 0.0
+    if px > 0:
+        _mark_rest_cache[symbol_upper] = (px, now)
+        return px
+    return float(ws_px) if ws_px is not None else None
 
 
 def _vol_atr_ok(symbol_upper: str, atr_val: Optional[float], close: float) -> bool:
@@ -661,7 +702,7 @@ def monitor_positions_loop() -> None:
             snapshot = dict(active_positions)
         for sym, pos in snapshot.items():
             try:
-                mark = latest_price_map.get(sym)
+                mark = _mark_for_position_monitor(sym)
                 if mark is None:
                     continue
                 with state_lock:
@@ -866,7 +907,9 @@ def _on_message(ws, message: str) -> None:
         s = data.get("s", "").lower()
         if "c" in k:
             try:
-                latest_price_map[s.upper()] = float(k["c"])
+                su = s.upper()
+                latest_price_map[su] = float(k["c"])
+                latest_ws_price_ts[su] = time.time()
             except Exception:
                 pass
         process_kline(s, k)
@@ -879,6 +922,14 @@ def _on_error(ws, error) -> None:
 
 
 def _on_close(ws, code, msg) -> None:
+    global _last_ws_disconnect_notify_ts
+    now = time.time()
+    cd = float(WS_DISCONNECT_TELEGRAM_COOLDOWN_SEC)
+    with _ws_disconnect_notify_lock:
+        if cd > 0 and (now - _last_ws_disconnect_notify_ts) < cd:
+            logger.warning("WS disconnect (telegram cooldown): code=%s msg=%s", code, msg)
+            return
+        _last_ws_disconnect_notify_ts = now
     tg.send_message(f"⚠️ 연결 끊김\ncode={code}\nmsg={msg}\n재연결 시도 중...")
 
 
@@ -897,7 +948,10 @@ def _run_websocket_batch(stream_url: str, batch_index: int, stream_count: int) -
                 on_close=_on_close,
                 on_open=_on_open,
             )
-            ws.run_forever(ping_interval=20, ping_timeout=10)
+            ws.run_forever(
+                ping_interval=int(WEBSOCKET_PING_INTERVAL),
+                ping_timeout=int(WEBSOCKET_PING_TIMEOUT),
+            )
         except Exception as e:
             logger.error(f"WS batch-{batch_index} crashed: {e}")
 
