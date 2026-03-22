@@ -49,6 +49,7 @@ def decide_entry_signal(
     state: Optional[Dict[str, float | int | str]],
     bar_index: int,
     prev_close: Optional[float],
+    vol_atr_ok: bool = True,
 ) -> tuple[Optional[Dict[str, float | str]], Optional[Dict[str, float | int | str]], Optional[str]]:
     _ = symbol_upper
     _ = open_price
@@ -69,8 +70,10 @@ def decide_entry_signal(
         return None, None, "STATE_RESET"
 
     # EMA / RSI / ADX: 5봉 전 값보다 큰지·작은지만 본다 (0.1% 최소 기울기 없음)
+    # vol_atr_ok: 직전 N봉 ATR 중앙값 대비 확장 + (선택) ATR/종가 하한 (main.py)
     long_basis = (
-        close_price > ema
+        vol_atr_ok
+        and close_price > ema
         and ema > ema_5
         and rsi >= RSI_LONG_MIN
         and rsi > rsi_5
@@ -78,7 +81,8 @@ def decide_entry_signal(
         and adx > adx_5
     )
     short_basis = (
-        close_price < ema
+        vol_atr_ok
+        and close_price < ema
         and ema < ema_5
         and rsi <= RSI_SHORT_MAX
         and rsi < rsi_5
@@ -104,7 +108,7 @@ def decide_entry_signal(
         else:
             if direction == "long":
                 breakout_high = float(state.get("breakout_high", 0.0))
-                if close_price > breakout_high:
+                if close_price > breakout_high and vol_atr_ok:
                     return (
                         {
                             "direction": "long",
@@ -117,7 +121,7 @@ def decide_entry_signal(
                     )
             elif direction == "short":
                 breakout_low = float(state.get("breakout_low", 0.0))
-                if close_price < breakout_low:
+                if close_price < breakout_low and vol_atr_ok:
                     return (
                         {
                             "direction": "short",
