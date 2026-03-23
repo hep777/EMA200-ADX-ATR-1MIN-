@@ -64,6 +64,7 @@ from config import (
     MARK_POLL_INTERVAL_SEC,
     MAX_CONCURRENT_POSITIONS,
     MAX_SL_PCT,
+    MAX_TICK_PCT_FOR_ENTRY,
     POSITION_RISK_PCT,
     RSI_PERIOD,
     RSI_SLOPE_BARS,
@@ -96,7 +97,6 @@ active_positions: Dict[str, Dict[str, Any]] = {}
 latest_price_map: Dict[str, float] = {}
 
 _last_universe_refresh_ts: float = 0.0
-MAX_TICK_PCT_FOR_ENTRY = 0.004  # 0.4%
 
 
 def check_single_instance() -> None:
@@ -310,8 +310,8 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
         tick_pct = tick / mark
         if tick_pct >= MAX_TICK_PCT_FOR_ENTRY:
             tg.send_message(
-                f"SKIP (tick too large): #{symbol_upper}\n"
-                f"tick_pct: {tick_pct*100:.3f}% (threshold {MAX_TICK_PCT_FOR_ENTRY*100:.3f}%)\n"
+                f"? ?? SKIP (? ??): #{symbol_upper}\n"
+                f"???: {tick_pct*100:.3f}% (?? {MAX_TICK_PCT_FOR_ENTRY*100:.3f}%)\n"
                 f"{_binance_footer(symbol_upper)}"
             )
             pending_entry.pop(symbol_upper, None)
