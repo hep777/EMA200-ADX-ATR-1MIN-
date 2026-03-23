@@ -55,6 +55,8 @@ from config import (
     BB_SQUEEZE_LOOKBACK,
     BB_SQUEEZE_MAX_MULT,
     DEFAULT_LEVERAGE,
+    HIGH_VOL_MAX_SL_PCT,
+    HIGH_VOL_POSITION_SIZE_PCT,
     KLINES_BOOTSTRAP_LIMIT,
     LOCK_FILE,
     LOG_FILE,
@@ -66,6 +68,8 @@ from config import (
     RSI_SLOPE_BARS,
     STREAM_BATCH_SIZE,
     SYMBOL_REFRESH_INTERVAL,
+    TIME_EXIT_BARS,
+    TRAIL_ACTIVATE_MULTIPLIER,
     UNIVERSE_TOP_N,
     validate_secrets,
     WEBSOCKET_PING_INTERVAL,
@@ -214,6 +218,45 @@ def update_trailing_sl(
     return False, old_sl, sl
 
 
+def time_exit_close(symbol_upper: str) -> None:
+    """TIME_EXIT_BARS 경과 + 트레일 미활성 시 시장가 청산."""
+    with state_lock:
+        if symbol_upper not in active_positions:
+            return
+        pos = dict(active_positions[symbol_upper])
+    direction = str(pos["direction"])
+    qty = float(pos["quantity"])
+    entry = float(pos["entry_price"])
+    try:
+        mk = float(get_mark_price(symbol_upper))
+    except Exception as e:
+        logger.warning("time_exit_close mark %s: %s", symbol_upper, e)
+        return
+    try:
+        cancel_all_open_orders(symbol_upper)
+    except Exception:
+        pass
+    close_position_market(symbol_upper.lower(), direction, qty)
+    if direction == "long":
+        pnl_pct = (mk - entry) / entry * 100.0 if entry else 0.0
+    else:
+        pnl_pct = (entry - mk) / entry * 100.0 if entry else 0.0
+    with state_lock:
+        if symbol_upper not in active_positions:
+            return
+        active_positions.pop(symbol_upper, None)
+        st = load_state()
+        remove_position(st, symbol_upper)
+        save_state(st)
+    tg.send_message(
+        f"시간초과 청산: #{symbol_upper} {direction.upper()}\n"
+        f"진입가: {_fmt(entry)}\n"
+        f"청산가: {_fmt(mk)}\n"
+        f"손익: {pnl_pct:+.2f}%"
+    )
+    logger.info("TIME_EXIT %s mark=%s pnl%%=%s", symbol_upper, mk, pnl_pct)
+
+
 def try_fire_pending(symbol_upper: str, k: Dict[str, Any]) -> None:
     pe = pending_entry.get(symbol_upper)
     if not pe or pe.get("done"):
@@ -246,20 +289,20 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
 
     mark = float(get_mark_price(symbol_upper))
     lp = loss_pct_vs_entry(direction, mark, sl0)
-    if lp > MAX_SL_PCT:
+    if lp > HIGH_VOL_MAX_SL_PCT:
         tg.send_message(
-            f"⏭️ 진입 SKIP (최대 SL 캡)\n"
-            f"#{symbol_upper} {direction.upper()}\n"
-            f"마크(추정진입): {_fmt(mark)}\n"
-            f"계산 SL: {_fmt(sl0)} (ATR×{ATR_MULTIPLIER})\n"
-            f"손실거리: {lp*100:.2f}% &gt; {MAX_SL_PCT*100:.1f}%"
+            f"진입 SKIP (SL 초과): #{symbol_upper}\n"
+            f"SL거리: {lp*100:.2f}%"
         )
         pending_entry.pop(symbol_upper, None)
-        logger.info("SKIP_CAP %s loss_pct=%.4f", symbol_upper, lp)
+        logger.info("SKIP_SL_TOO_WIDE %s loss_pct=%.4f", symbol_upper, lp)
         return
 
+    high_vol = lp > MAX_SL_PCT
+    risk_pct = HIGH_VOL_POSITION_SIZE_PCT if high_vol else POSITION_RISK_PCT
+
     eq = float(get_account_equity_usdt())
-    margin_usdt = eq * float(POSITION_RISK_PCT)
+    margin_usdt = eq * float(risk_pct)
     lev = set_isolated_and_leverage(symbol_upper)
     if lev is None:
         pending_entry.pop(symbol_upper, None)
@@ -279,7 +322,9 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
     entry = float(res["entry_price"])
     qty_f = float(res["quantity"])
 
-    if loss_pct_vs_entry(direction, entry, sl0) > MAX_SL_PCT:
+    lp_fill = loss_pct_vs_entry(direction, entry, sl0)
+    sl_cap = HIGH_VOL_MAX_SL_PCT if high_vol else MAX_SL_PCT
+    if lp_fill > sl_cap:
         try:
             cancel_all_open_orders(symbol_upper)
         except Exception:
@@ -302,6 +347,9 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
         "quantity": qty_f,
         "sl_price": sl0,
         "signal_atr": signal_atr,
+        "trail_active": False,
+        "bars_since_entry": 0,
+        "high_vol_entry": high_vol,
     }
     with state_lock:
         active_positions[symbol_upper] = pos
@@ -319,7 +367,12 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
         f"초기 SL: {_fmt(sl0)}\n"
         f'<a href="{_binance_link(symbol_upper)}">Binance</a>'
     )
-    logger.info("ENTRY %s %s entry=%s sl=%s atr=%s qty=%s", symbol_upper, direction, entry, sl0, signal_atr, qty_f)
+    if high_vol:
+        tg.send_message(
+            f"고변동성 진입 (사이즈 축소): #{symbol_upper} {direction.upper()}\n"
+            f"SL거리: {lp*100:.2f}% 사이즈: {HIGH_VOL_POSITION_SIZE_PCT*100:.1f}%"
+        )
+    logger.info("ENTRY %s %s entry=%s sl=%s atr=%s qty=%s high_vol=%s", symbol_upper, direction, entry, sl0, signal_atr, qty_f, high_vol)
 
 
 def process_kline(symbol_lower: str, k: Dict[str, Any]) -> None:
@@ -366,21 +419,34 @@ def process_kline(symbol_lower: str, k: Dict[str, Any]) -> None:
             pos = dict(active_positions.get(symbol_upper, {}))
         if not pos:
             return
-        chg, old_sl, new_sl = update_trailing_sl(
-            symbol_upper, pos, h, l, closes, highs, lows
-        )
-        with state_lock:
-            if symbol_upper in active_positions:
-                active_positions[symbol_upper] = pos
-                st = load_state()
-                upsert_position(st, symbol_upper, pos)
-                save_state(st)
-        if chg:
-            tg.send_message(
-                f"📌 SL 갱신 #{symbol_upper}\n"
-                f"이전 SL: {_fmt(old_sl)}\n"
-                f"새 SL: {_fmt(new_sl)}"
+        pos["bars_since_entry"] = int(pos.get("bars_since_entry", 0)) + 1
+        trail_active = bool(pos.get("trail_active"))
+        if pos["bars_since_entry"] >= TIME_EXIT_BARS and not trail_active:
+            time_exit_close(symbol_upper)
+            return
+        if trail_active:
+            chg, old_sl, new_sl = update_trailing_sl(
+                symbol_upper, pos, h, l, closes, highs, lows
             )
+            with state_lock:
+                if symbol_upper in active_positions:
+                    active_positions[symbol_upper] = pos
+                    st = load_state()
+                    upsert_position(st, symbol_upper, pos)
+                    save_state(st)
+            if chg:
+                tg.send_message(
+                    f"📌 SL 갱신 #{symbol_upper}\n"
+                    f"이전 SL: {_fmt(old_sl)}\n"
+                    f"새 SL: {_fmt(new_sl)}"
+                )
+        else:
+            with state_lock:
+                if symbol_upper in active_positions:
+                    active_positions[symbol_upper] = pos
+                    st = load_state()
+                    upsert_position(st, symbol_upper, pos)
+                    save_state(st)
         return
 
     sig = evaluate_entry_signal(
@@ -436,36 +502,70 @@ def mark_monitor_loop() -> None:
                     mk = float(get_mark_price(sym))
                 except Exception:
                     continue
+
+                # 1순위: 초기/트레일 SL
                 hit = False
                 if direction == "long" and mk <= sl:
                     hit = True
                 elif direction == "short" and mk >= sl:
                     hit = True
-                if not hit:
+                if hit:
+                    try:
+                        cancel_all_open_orders(sym)
+                    except Exception:
+                        pass
+                    close_position_market(sym.lower(), direction, qty)
+                    entry = float(pos["entry_price"])
+                    if direction == "long":
+                        pnl_pct = (mk - entry) / entry * 100.0 if entry else 0.0
+                    else:
+                        pnl_pct = (entry - mk) / entry * 100.0 if entry else 0.0
+                    with state_lock:
+                        active_positions.pop(sym, None)
+                        st = load_state()
+                        remove_position(st, sym)
+                        save_state(st)
+                    tg.send_message(
+                        f"🏁 청산 (마크 SL)\n"
+                        f"#{sym} {direction.upper()}\n"
+                        f"청산가(마크): {_fmt(mk)}\n"
+                        f"손익: {pnl_pct:+.2f}%\n"
+                        f'<a href="{_binance_link(sym)}">Binance</a>'
+                    )
+                    logger.info("CLOSE %s mark=%s sl=%s pnl%%=%s", sym, mk, sl, pnl_pct)
                     continue
-                try:
-                    cancel_all_open_orders(sym)
-                except Exception:
-                    pass
-                res = close_position_market(sym.lower(), direction, qty)
+
+                # 트레일 활성화 (마크 폴링, 1회만)
+                if bool(pos.get("trail_active")):
+                    continue
                 entry = float(pos["entry_price"])
-                if direction == "long":
-                    pnl_pct = (mk - entry) / entry * 100.0 if entry else 0.0
-                else:
-                    pnl_pct = (entry - mk) / entry * 100.0 if entry else 0.0
+                sig_atr = float(pos.get("signal_atr", 0))
+                if sig_atr <= 0:
+                    continue
+                thr = sig_atr * TRAIL_ACTIVATE_MULTIPLIER
+                activated = False
+                if direction == "long" and mk >= entry + thr:
+                    activated = True
+                elif direction == "short" and mk <= entry - thr:
+                    activated = True
+                if not activated:
+                    continue
                 with state_lock:
-                    active_positions.pop(sym, None)
+                    if sym not in active_positions:
+                        continue
+                    p = active_positions[sym]
+                    if bool(p.get("trail_active")):
+                        continue
+                    p["trail_active"] = True
                     st = load_state()
-                    remove_position(st, sym)
+                    upsert_position(st, sym, p)
                     save_state(st)
                 tg.send_message(
-                    f"🏁 청산 (마크 SL)\n"
-                    f"#{sym} {direction.upper()}\n"
-                    f"청산가(마크): {_fmt(mk)}\n"
-                    f"손익: {pnl_pct:+.2f}%\n"
-                    f'<a href="{_binance_link(sym)}">Binance</a>'
+                    f"트레일링 활성화: #{sym} {direction.upper()}\n"
+                    f"진입가: {_fmt(entry)}\n"
+                    f"활성화가: {_fmt(mk)}"
                 )
-                logger.info("CLOSE %s mark=%s sl=%s pnl%%=%s", sym, mk, sl, pnl_pct)
+                logger.info("TRAIL_ON %s entry=%s mk=%s thr=%s", sym, entry, mk, thr)
         except Exception as e:
             logger.exception("mark_monitor: %s", e)
             try:
@@ -490,6 +590,12 @@ def recover_positions() -> None:
             pos["quantity"] = qty
             pos["entry_price"] = entry
             pos["direction"] = direction
+            pos.setdefault("trail_active", False)
+            pos.setdefault("bars_since_entry", 0)
+            pos.setdefault("high_vol_entry", False)
+            sa = float(pos.get("signal_atr", 0) or 0)
+            if sa <= 0:
+                pos["signal_atr"] = max(entry * 0.002, 1e-12)
             if "sl_price" not in pos or float(pos.get("sl_price", 0)) <= 0:
                 if direction == "long":
                     pos["sl_price"] = round_price_to_tick(sym, entry * (1.0 - MAX_SL_PCT * 0.9))
@@ -506,6 +612,10 @@ def recover_positions() -> None:
                 "entry_price": entry,
                 "quantity": qty,
                 "sl_price": sl0,
+                "trail_active": False,
+                "bars_since_entry": 0,
+                "high_vol_entry": False,
+                "signal_atr": max(entry * 0.002, 1e-12),
             }
         active_positions[sym] = pos
         upsert_position(st, sym, pos)
@@ -672,8 +782,11 @@ def main() -> None:
 
     tg.send_message(
         f"🚀 BB 스퀴즈 봇 시작\n"
-        f"15분봉 · 레버 {DEFAULT_LEVERAGE}x · 진입 {POSITION_RISK_PCT*100:.0f}% · 최대 {MAX_CONCURRENT_POSITIONS}포지션\n"
-        f"SL: ATR{ATR_PERIOD}×{ATR_MULTIPLIER} · 최대손실캡 {MAX_SL_PCT*100:.1f}%\n"
+        f"15분봉 · 레버 {DEFAULT_LEVERAGE}x · 진입 {POSITION_RISK_PCT*100:.0f}% "
+        f"(고변동 {HIGH_VOL_POSITION_SIZE_PCT*100:.1f}%) · 최대 {MAX_CONCURRENT_POSITIONS}포지션\n"
+        f"SL: ATR{ATR_PERIOD}×{ATR_MULTIPLIER} · SL캡 일반≤{MAX_SL_PCT*100:.0f}% 고변동≤{HIGH_VOL_MAX_SL_PCT*100:.0f}%\n"
+        f"트레일 활성: 마크가 ±ATR×{TRAIL_ACTIVATE_MULTIPLIER} · "
+        f"미활성 {TIME_EXIT_BARS}봉 시 시간초과 청산\n"
         f"감시 심볼: {len(tracked_symbols)}"
     )
 

@@ -63,7 +63,7 @@ def validate_secrets() -> None:
 
 
 # Risk / execution (스펙 이름 + 하위 호환)
-LEVERAGE = _get_env_int("LEVERAGE", 10)
+LEVERAGE = _get_env_int("LEVERAGE", 7)
 DEFAULT_LEVERAGE = LEVERAGE
 DESIRED_LEVERAGE = DEFAULT_LEVERAGE
 LEVERAGE_BY_SYMBOL: dict = {}
@@ -97,6 +97,15 @@ RSI_SLOPE_BARS = _get_env_int("RSI_SLOPE_BARS", RSI_SLOPE_PERIOD)
 ATR_PERIOD = _get_env_int("ATR_PERIOD", 14)
 ATR_MULTIPLIER = _get_env_float("ATR_MULTIPLIER", 0.5)
 MAX_SL_PCT = _get_env_float("MAX_SL_PCT", 0.03)
+
+# 트레일 활성화: 마크가 진입가 ± signal_atr × 이 배수 도달 시 15분봉 트레일 시작
+TRAIL_ACTIVATE_MULTIPLIER = _get_env_float("TRAIL_ACTIVATE_MULTIPLIER", 0.5)
+# 트레일 미활성 채로 N개 15분 확정봉이 지나면 본전 청산(시장가)
+TIME_EXIT_BARS = _get_env_int("TIME_EXIT_BARS", 4)
+
+# 고변동성: SL거리 (MAX_SL_PCT, HIGH_VOL_MAX_SL_PCT] 구간은 소액 진입
+HIGH_VOL_MAX_SL_PCT = _get_env_float("HIGH_VOL_MAX_SL_PCT", 0.05)
+HIGH_VOL_POSITION_SIZE_PCT = _get_env_float("HIGH_VOL_POSITION_SIZE_PCT", 0.003)
 
 # Polling / universe
 MARK_PRICE_POLL_INTERVAL = _get_env_float("MARK_PRICE_POLL_INTERVAL", 3.0)
