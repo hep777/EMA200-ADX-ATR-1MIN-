@@ -156,6 +156,19 @@ def _fmt(x: float) -> str:
     return f"{x:.6f}"
 
 
+def _binance_footer(sym: str) -> str:
+    return f'<a href="{_binance_link(sym)}">Binance</a>'
+
+
+def _sl_close_title(pnl_pct: float) -> str:
+    # 아이콘만 봐도 구분: 🟢 익(초록) / 🔴 손(빨강) / ⚖️ 본절
+    if pnl_pct > 0:
+        return "🟢 익절 청산 (마크 SL)"
+    if pnl_pct < 0:
+        return "🔴 손절 청산 (마크 SL)"
+    return "⚖️ 본절 청산 (마크 SL)"
+
+
 def merge_universe_with_positions(symbols: List[str]) -> List[str]:
     u: Set[str] = set(s.lower() for s in symbols)
     for p in get_open_positions():
@@ -249,10 +262,12 @@ def time_exit_close(symbol_upper: str) -> None:
         remove_position(st, symbol_upper)
         save_state(st)
     tg.send_message(
-        f"시간초과 청산: #{symbol_upper} {direction.upper()}\n"
+        f"⏰ 시간초과 청산: #{symbol_upper}\n"
+        f"포지션 : {direction.upper()}\n"
         f"진입가: {_fmt(entry)}\n"
         f"청산가: {_fmt(mk)}\n"
-        f"손익: {pnl_pct:+.2f}%"
+        f"손익: {pnl_pct:+.2f}%\n"
+        f"{_binance_footer(symbol_upper)}"
     )
     logger.info("TIME_EXIT %s mark=%s pnl%%=%s", symbol_upper, mk, pnl_pct)
 
@@ -291,8 +306,9 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
     lp = loss_pct_vs_entry(direction, mark, sl0)
     if lp > HIGH_VOL_MAX_SL_PCT:
         tg.send_message(
-            f"진입 SKIP (SL 초과): #{symbol_upper}\n"
-            f"SL거리: {lp*100:.2f}%"
+            f"⛔ 진입 SKIP (SL 초과): #{symbol_upper}\n"
+            f"SL거리: {lp*100:.2f}%\n"
+            f"{_binance_footer(symbol_upper)}"
         )
         pending_entry.pop(symbol_upper, None)
         logger.info("SKIP_SL_TOO_WIDE %s loss_pct=%.4f", symbol_upper, lp)
@@ -315,7 +331,7 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
 
     res = open_position_market(symbol_upper.lower(), direction, qty)
     if not res:
-        tg.send_message(f"❌ 진입 실패 #{symbol_upper}")
+        tg.send_message(f"❌ 진입 실패 #{symbol_upper}\n{_binance_footer(symbol_upper)}")
         pending_entry.pop(symbol_upper, None)
         return
 
@@ -334,7 +350,8 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
             f"⚠️ 체결 후 SL캡 초과 → 즉시 청산\n"
             f"#{symbol_upper}\n"
             f"진입: {_fmt(entry)}\n"
-            f"SL: {_fmt(sl0)}"
+            f"SL: {_fmt(sl0)}\n"
+            f"{_binance_footer(symbol_upper)}"
         )
         pending_entry.pop(symbol_upper, None)
         logger.warning("POST_FILL_CAP %s", symbol_upper)
@@ -358,19 +375,20 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
         save_state(st)
         pending_entry.pop(symbol_upper, None)
 
+    side_ico = "📈" if direction == "long" else "📉"
     tg.send_message(
-        f"🟢 진입 {direction.upper()}\n"
+        f"{side_ico} 진입 {direction.upper()}\n"
         f"#{symbol_upper}\n"
         f"진입가: {_fmt(entry)}\n"
-        f"수량: {qty_f}\n"
-        f"ATR(신호봉): {_fmt(signal_atr)}\n"
         f"초기 SL: {_fmt(sl0)}\n"
-        f'<a href="{_binance_link(symbol_upper)}">Binance</a>'
+        f"ATR(신호봉): {_fmt(signal_atr)}\n"
+        f"{_binance_footer(symbol_upper)}"
     )
     if high_vol:
         tg.send_message(
-            f"고변동성 진입 (사이즈 축소): #{symbol_upper} {direction.upper()}\n"
-            f"SL거리: {lp*100:.2f}% 사이즈: {HIGH_VOL_POSITION_SIZE_PCT*100:.1f}%"
+            f"⚡ 고변동성 진입 (사이즈 축소): #{symbol_upper} {direction.upper()}\n"
+            f"SL거리: {lp*100:.2f}% 사이즈: {HIGH_VOL_POSITION_SIZE_PCT*100:.1f}%\n"
+            f"{_binance_footer(symbol_upper)}"
         )
     logger.info("ENTRY %s %s entry=%s sl=%s atr=%s qty=%s high_vol=%s", symbol_upper, direction, entry, sl0, signal_atr, qty_f, high_vol)
 
@@ -438,7 +456,8 @@ def process_kline(symbol_lower: str, k: Dict[str, Any]) -> None:
                 tg.send_message(
                     f"📌 SL 갱신 #{symbol_upper}\n"
                     f"이전 SL: {_fmt(old_sl)}\n"
-                    f"새 SL: {_fmt(new_sl)}"
+                    f"새 SL: {_fmt(new_sl)}\n"
+                    f"{_binance_footer(symbol_upper)}"
                 )
         else:
             with state_lock:
@@ -526,11 +545,11 @@ def mark_monitor_loop() -> None:
                         remove_position(st, sym)
                         save_state(st)
                     tg.send_message(
-                        f"🏁 청산 (마크 SL)\n"
+                        f"{_sl_close_title(pnl_pct)}\n"
                         f"#{sym} {direction.upper()}\n"
                         f"청산가(마크): {_fmt(mk)}\n"
                         f"손익: {pnl_pct:+.2f}%\n"
-                        f'<a href="{_binance_link(sym)}">Binance</a>'
+                        f"{_binance_footer(sym)}"
                     )
                     logger.info("CLOSE %s mark=%s sl=%s pnl%%=%s", sym, mk, sl, pnl_pct)
                     continue
@@ -561,9 +580,10 @@ def mark_monitor_loop() -> None:
                     upsert_position(st, sym, p)
                     save_state(st)
                 tg.send_message(
-                    f"트레일링 활성화: #{sym} {direction.upper()}\n"
+                    f"🎯 트레일링 활성화: #{sym} {direction.upper()}\n"
                     f"진입가: {_fmt(entry)}\n"
-                    f"활성화가: {_fmt(mk)}"
+                    f"활성화가: {_fmt(mk)}\n"
+                    f"{_binance_footer(sym)}"
                 )
                 logger.info("TRAIL_ON %s entry=%s mk=%s thr=%s", sym, entry, mk, thr)
         except Exception as e:
