@@ -20,6 +20,7 @@ from binance_client import (
     get_klines,
     get_mark_price,
     get_open_positions,
+    get_symbol_info,
     get_top_usdt_perpet_by_quote_volume,
     open_position_market,
     set_isolated_and_leverage,
@@ -119,6 +120,14 @@ def _fmt(v: float) -> str:
 
 def _binance_link(sym: str) -> str:
     return f"https://www.binance.com/en/futures/{sym}"
+
+
+def _round_order_qty(symbol_upper: str, qty: float) -> float:
+    info = get_symbol_info(symbol_upper)
+    if not info:
+        return max(0.0, float(qty))
+    q = round(float(qty), int(info["qty_precision"]))
+    return max(0.0, q)
 
 
 def persist_runtime_state() -> None:
@@ -478,14 +487,19 @@ def mark_monitor_loop() -> None:
                     if not bool(pos.get("partial_taken")):
                         hit = mark >= entry * (1.0 + BREAKOUT_TP_PCT) if direction == "long" else mark <= entry * (1.0 - BREAKOUT_TP_PCT)
                         if hit:
-                            close_qty = qty * BREAKOUT_TP_CLOSE_RATIO
-                            if close_qty > 0:
-                                close_position_market(sym.lower(), direction, close_qty)
-                                pos["quantity"] = max(0.0, qty - close_qty)
-                                pos["partial_taken"] = True
-                                active_positions[sym] = pos
-                                persist_runtime_state()
-                                tg.send_message(f"✅ 1차 익절 40% #{sym} ({direction.upper()})\n마크: {_fmt(mark)}")
+                            close_qty = _round_order_qty(sym, qty * BREAKOUT_TP_CLOSE_RATIO)
+                            if close_qty <= 0.0 or close_qty >= qty:
+                                close_full_position(sym, pos, "1차 익절 수량 보정(전량)", mark)
+                                continue
+                            close_position_market(sym.lower(), direction, close_qty)
+                            pos["quantity"] = _round_order_qty(sym, max(0.0, qty - close_qty))
+                            pos["partial_taken"] = True
+                            active_positions[sym] = pos
+                            persist_runtime_state()
+                            tg.send_message(
+                                f"✅ 1차 익절 40% #{sym} ({direction.upper()})\n"
+                                f"익절수량: {close_qty}\n마크: {_fmt(mark)}"
+                            )
                 else:
                     tp_hit = mark >= entry * (1.0 + FAKEOUT_TP_PCT) if direction == "long" else mark <= entry * (1.0 - FAKEOUT_TP_PCT)
                     if tp_hit:
