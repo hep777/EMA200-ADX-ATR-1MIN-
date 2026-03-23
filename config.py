@@ -1,6 +1,6 @@
 """
-BB 스퀴즈 + 밴드 돌파 + RSI + ATR SL 봇.
-환경변수(.env) 또는 systemd EnvironmentFile.
+Trendline breakout/fakeout 1m bot.
+환경변수(.env) 로드.
 """
 
 import os
@@ -63,7 +63,7 @@ def validate_secrets() -> None:
 
 
 # Risk / execution (스펙 이름 + 하위 호환)
-LEVERAGE = _get_env_int("LEVERAGE", 7)
+LEVERAGE = _get_env_int("LEVERAGE", 10)
 DEFAULT_LEVERAGE = LEVERAGE
 DESIRED_LEVERAGE = DEFAULT_LEVERAGE
 LEVERAGE_BY_SYMBOL: dict = {}
@@ -80,38 +80,22 @@ EXCLUDE_SYMBOLS = [
     if s.strip()
 ]
 
-# BB
-BB_PERIOD = _get_env_int("BB_PERIOD", 20)
-BB_STD = _get_env_float("BB_STD", 2.0)
-SQUEEZE_PERIOD = _get_env_int("SQUEEZE_PERIOD", 50)
-BB_SQUEEZE_LOOKBACK = _get_env_int("BB_SQUEEZE_LOOKBACK", SQUEEZE_PERIOD)
-SQUEEZE_THRESHOLD = _get_env_float("SQUEEZE_THRESHOLD", 1.2)
-BB_SQUEEZE_MAX_MULT = _get_env_float("BB_SQUEEZE_MAX_MULT", SQUEEZE_THRESHOLD)
-
-# RSI
-RSI_PERIOD = _get_env_int("RSI_PERIOD", 14)
-RSI_SLOPE_PERIOD = _get_env_int("RSI_SLOPE_PERIOD", 5)
-RSI_SLOPE_BARS = _get_env_int("RSI_SLOPE_BARS", RSI_SLOPE_PERIOD)
-
-# ATR SL
-ATR_PERIOD = _get_env_int("ATR_PERIOD", 14)
-ATR_MULTIPLIER = _get_env_float("ATR_MULTIPLIER", 0.5)
-MAX_SL_PCT = _get_env_float("MAX_SL_PCT", 0.03)
-
-# 트레일 활성화: 마크가 진입가 ± signal_atr × 이 배수 도달 시 15분봉 트레일 시작
-TRAIL_ACTIVATE_MULTIPLIER = _get_env_float("TRAIL_ACTIVATE_MULTIPLIER", 0.5)
-# 트레일 미활성 채로 N개 15분 확정봉이 지나면 본전 청산(시장가)
-TIME_EXIT_BARS = _get_env_int("TIME_EXIT_BARS", 4)
-
-# 고변동성: SL거리 (MAX_SL_PCT, HIGH_VOL_MAX_SL_PCT] 구간은 소액 진입
-HIGH_VOL_MAX_SL_PCT = _get_env_float("HIGH_VOL_MAX_SL_PCT", 0.05)
-HIGH_VOL_POSITION_SIZE_PCT = _get_env_float("HIGH_VOL_POSITION_SIZE_PCT", 0.003)
+# Trendline strategy
+SWING_LOOKBACK_BARS = _get_env_int("SWING_LOOKBACK_BARS", 110)
+SWING_LEFT_BARS = _get_env_int("SWING_LEFT_BARS", 30)
+SWING_RIGHT_BARS = _get_env_int("SWING_RIGHT_BARS", 30)
+TRENDLINE_MIN_POINTS = _get_env_int("TRENDLINE_MIN_POINTS", 3)
+TRENDLINE_MIN_R2 = _get_env_float("TRENDLINE_MIN_R2", 0.85)
+VOLUME_AVG_PERIOD = _get_env_int("VOLUME_AVG_PERIOD", 20)
+BREAKOUT_TP_PCT = _get_env_float("BREAKOUT_TP_PCT", 0.007)
+BREAKOUT_TP_CLOSE_RATIO = _get_env_float("BREAKOUT_TP_CLOSE_RATIO", 0.4)
+FAKEOUT_TP_PCT = _get_env_float("FAKEOUT_TP_PCT", 0.01)
 
 # Polling / universe
-MARK_PRICE_POLL_INTERVAL = _get_env_float("MARK_PRICE_POLL_INTERVAL", 3.0)
+MARK_PRICE_POLL_INTERVAL = _get_env_float("MARK_PRICE_POLL_INTERVAL", 1.0)
 MARK_POLL_INTERVAL_SEC = MARK_PRICE_POLL_INTERVAL
 
-SYMBOL_REFRESH_INTERVAL = _get_env_int("SYMBOL_REFRESH_INTERVAL", 86400)
+SYMBOL_REFRESH_INTERVAL = _get_env_int("SYMBOL_REFRESH_INTERVAL", 3600)
 UNIVERSE_TOP_N = _get_env_int("UNIVERSE_TOP_N", 300)
 
 API_MAX_RETRIES = _get_env_int("API_MAX_RETRIES", 3)
@@ -125,4 +109,4 @@ STREAM_BATCH_SIZE = _get_env_int("STREAM_BATCH_SIZE", 100)
 WEBSOCKET_PING_INTERVAL = _get_env_int("WEBSOCKET_PING_INTERVAL", 30)
 WEBSOCKET_PING_TIMEOUT = _get_env_int("WEBSOCKET_PING_TIMEOUT", 20)
 
-KLINES_BOOTSTRAP_LIMIT = _get_env_int("KLINES_BOOTSTRAP_LIMIT", 250)
+KLINES_BOOTSTRAP_LIMIT = _get_env_int("KLINES_BOOTSTRAP_LIMIT", 320)
