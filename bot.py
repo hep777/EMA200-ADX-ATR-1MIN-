@@ -437,7 +437,42 @@ def process_kline(symbol_lower: str, k: Dict[str, Any]) -> None:
             pos = dict(active_positions.get(symbol_upper, {}))
         if not pos:
             return
+        direction = str(pos["direction"])
+        entry = float(pos["entry_price"])
+        sig_atr = float(pos.get("signal_atr", 0))
+
         pos["bars_since_entry"] = int(pos.get("bars_since_entry", 0)) + 1
+
+        # 트레일 활성화: 15분 확정봉 종가만 사용 (신호봉 ATR × 배수)
+        if not bool(pos.get("trail_active")) and sig_atr > 0:
+            thr = sig_atr * TRAIL_ACTIVATE_MULTIPLIER
+            act = False
+            if direction == "long" and c >= entry + thr:
+                act = True
+            elif direction == "short" and c <= entry - thr:
+                act = True
+            if act:
+                pos["trail_active"] = True
+                with state_lock:
+                    if symbol_upper in active_positions:
+                        active_positions[symbol_upper] = pos
+                        st = load_state()
+                        upsert_position(st, symbol_upper, pos)
+                        save_state(st)
+                tg.send_message(
+                    f"🎯 트레일링 활성화: #{symbol_upper} {direction.upper()}\n"
+                    f"진입가: {_fmt(entry)}\n"
+                    f"활성화가: {_fmt(c)}\n"
+                    f"{_binance_footer(symbol_upper)}"
+                )
+                logger.info(
+                    "TRAIL_ON %s entry=%s close=%s thr=%s",
+                    symbol_upper,
+                    entry,
+                    c,
+                    thr,
+                )
+
         trail_active = bool(pos.get("trail_active"))
         if pos["bars_since_entry"] >= TIME_EXIT_BARS and not trail_active:
             time_exit_close(symbol_upper)
@@ -554,38 +589,6 @@ def mark_monitor_loop() -> None:
                     logger.info("CLOSE %s mark=%s sl=%s pnl%%=%s", sym, mk, sl, pnl_pct)
                     continue
 
-                # 트레일 활성화 (마크 폴링, 1회만)
-                if bool(pos.get("trail_active")):
-                    continue
-                entry = float(pos["entry_price"])
-                sig_atr = float(pos.get("signal_atr", 0))
-                if sig_atr <= 0:
-                    continue
-                thr = sig_atr * TRAIL_ACTIVATE_MULTIPLIER
-                activated = False
-                if direction == "long" and mk >= entry + thr:
-                    activated = True
-                elif direction == "short" and mk <= entry - thr:
-                    activated = True
-                if not activated:
-                    continue
-                with state_lock:
-                    if sym not in active_positions:
-                        continue
-                    p = active_positions[sym]
-                    if bool(p.get("trail_active")):
-                        continue
-                    p["trail_active"] = True
-                    st = load_state()
-                    upsert_position(st, sym, p)
-                    save_state(st)
-                tg.send_message(
-                    f"🎯 트레일링 활성화: #{sym} {direction.upper()}\n"
-                    f"진입가: {_fmt(entry)}\n"
-                    f"활성화가: {_fmt(mk)}\n"
-                    f"{_binance_footer(sym)}"
-                )
-                logger.info("TRAIL_ON %s entry=%s mk=%s thr=%s", sym, entry, mk, thr)
         except Exception as e:
             logger.exception("mark_monitor: %s", e)
             try:
@@ -805,7 +808,7 @@ def main() -> None:
         f"15분봉 · 레버 {DEFAULT_LEVERAGE}x · 진입 {POSITION_RISK_PCT*100:.0f}% "
         f"(고변동 {HIGH_VOL_POSITION_SIZE_PCT*100:.1f}%) · 최대 {MAX_CONCURRENT_POSITIONS}포지션\n"
         f"SL: ATR{ATR_PERIOD}×{ATR_MULTIPLIER} · SL캡 일반≤{MAX_SL_PCT*100:.0f}% 고변동≤{HIGH_VOL_MAX_SL_PCT*100:.0f}%\n"
-        f"트레일 활성: 마크가 ±ATR×{TRAIL_ACTIVATE_MULTIPLIER} · "
+        f"트레일 활성: 15분 종가(진입가 ± 신호ATR×{TRAIL_ACTIVATE_MULTIPLIER}) · "
         f"미활성 {TIME_EXIT_BARS}봉 시 시간초과 청산\n"
         f"감시 심볼: {len(tracked_symbols)}"
     )
