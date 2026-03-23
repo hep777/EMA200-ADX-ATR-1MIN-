@@ -310,8 +310,8 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
         tick_pct = tick / mark
         if tick_pct >= MAX_TICK_PCT_FOR_ENTRY:
             tg.send_message(
-                f"? ?? SKIP (? ??): #{symbol_upper}\n"
-                f"???: {tick_pct*100:.3f}% (?? {MAX_TICK_PCT_FOR_ENTRY*100:.3f}%)\n"
+                f"SKIP (tick too large): #{symbol_upper}\n"
+                f"tick_pct: {tick_pct*100:.3f}% (threshold {MAX_TICK_PCT_FOR_ENTRY*100:.3f}%)\n"
                 f"{_binance_footer(symbol_upper)}"
             )
             pending_entry.pop(symbol_upper, None)
