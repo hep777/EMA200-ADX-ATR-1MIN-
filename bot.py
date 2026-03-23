@@ -1,9 +1,9 @@
-ï»¿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Binance USDT è‡¾ë‹¿ë¦°?? ?ì¢ŠĞª ?? BB ?ã…½?ëŒ? + è«›ëŒ€?? ???? + RSI æ¹²ê³—?ë©¸ë¦° + ATR SL (15éº?éŠ?).
+Binance USDT ë¬´ê¸°í?? ì? ë¬¼ â?? BB ì?¤í?´ì¦? + ë°´ë?? ë?í?? + RSI ê¸°ì?¸ê¸° + ATR SL (15ë¶?ë´?).
 
-?ÑŠ???? ??ä»¥? (??è¸°? ????):
+ì?¬ì??ì?? í??ì¤? (ì??ë²? ì??ì??):
   pkill -f "python3 bot.py"
   sleep 3
   rm -f /tmp/bot.lock
@@ -87,7 +87,7 @@ bot_active = True
 tracked_symbols: List[str] = []
 streamed_symbols: Set[str] = set()
 
-# OHLC ???ã…½?ì¢Šâ” (15éº? ????éŠ?ï§? append)
+# OHLC í??ì?¤í? ë¦¬ (15ë¶? í??ì ?ë´?ë§? append)
 ohlc_closes: Dict[str, deque] = {}
 ohlc_highs: Dict[str, deque] = {}
 ohlc_lows: Dict[str, deque] = {}
@@ -163,12 +163,12 @@ def _binance_footer(sym: str) -> str:
 
 
 def _sl_close_title(pnl_pct: float) -> str:
-    # ???ëŒ?ï§? éŠë¨®? æ´Ñ‰?: ?????ç¥?æ¿¡? / ?????é®â‘£?) / ??æˆª?è¹‚ëª„?
+    # ì??ì´ì½?ë§? ë´ë? êµ¬ë¶?: ğ??¢ ìµ(ì´?ë¡) / ğ??´ ì?(ë¹¨ê°?) / â??ï¸ ë³¸ì ?
     if pnl_pct > 0:
-        return "????ë“­? ï§£???(ï§???SL)"
+        return "ğ??¢ ìµì ? ì²­ì?° (ë§?í¬ SL)"
     if pnl_pct < 0:
-        return "????ë¨¯? ï§£???(ï§???SL)"
-    return "??æˆª?è¹‚ëª„? ï§£???(ï§???SL)"
+        return "ğ??´ ì?ì ? ì²­ì?° (ë§?í¬ SL)"
+    return "â??ï¸ ë³¸ì ? ì²­ì?° (ë§?í¬ SL)"
 
 
 def merge_universe_with_positions(symbols: List[str]) -> List[str]:
@@ -209,7 +209,7 @@ def update_trailing_sl(
     lows: List[float],
 ) -> Tuple[bool, float, float]:
     """
-    15éº? éŠ? ï§?åª›??? ATR?è«›ê³—??æ¿¡? ?ëªƒ???
+    15ë¶? ë´? ë§?ê° ì?? ATRÃ?ë°°ì??ë¡? í?¸ë ?ì¼.
     Returns: (changed, old_sl, new_sl)
     """
     direction = str(pos["direction"])
@@ -234,7 +234,7 @@ def update_trailing_sl(
 
 
 def time_exit_close(symbol_upper: str) -> None:
-    """TIME_EXIT_BARS å¯ƒì„ë‚µ + ?ëªƒ???èª˜ëª…?????? ???Îº? ï§£???"""
+    """TIME_EXIT_BARS ê²½ê³¼ + í?¸ë ?ì¼ ë¯¸í??ì?± ì?? ì??ì?¥ê°? ì²­ì?°."""
     with state_lock:
         if symbol_upper not in active_positions:
             return
@@ -264,11 +264,11 @@ def time_exit_close(symbol_upper: str) -> None:
         remove_position(st, symbol_upper)
         save_state(st)
     tg.send_message(
-        f"????åª›?ç¥?æ€¨?ï§£??? #{symbol_upper}\n"
-        f"?ÑŠ??? : {direction.upper()}\n"
-        f"ï§???åª›?: {_fmt(entry)}\n"
-        f"ï§£??ê³Œ?: {_fmt(mk)}\n"
-        f"?ë¨¯ì”¡: {pnl_pct:+.2f}%\n"
+        f"â° ì??ê°?ì´?ê³¼ ì²­ì?°: #{symbol_upper}\n"
+        f"í¬ì§?ì?? : {direction.upper()}\n"
+        f"ì§?ì??ê°?: {_fmt(entry)}\n"
+        f"ì²­ì?°ê°?: {_fmt(mk)}\n"
+        f"ì?ìµ: {pnl_pct:+.2f}%\n"
         f"{_binance_footer(symbol_upper)}"
     )
     logger.info("TIME_EXIT %s mark=%s pnl%%=%s", symbol_upper, mk, pnl_pct)
@@ -321,8 +321,8 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
     lp = loss_pct_vs_entry(direction, mark, sl0)
     if lp > HIGH_VOL_MAX_SL_PCT:
         tg.send_message(
-            f"?? ï§??? SKIP (SL ç¥?æ€¨?: #{symbol_upper}\n"
-            f"SLå«„ê³•â”: {lp*100:.2f}%\n"
+            f"â?? ì§?ì?? SKIP (SL ì´?ê³¼): #{symbol_upper}\n"
+            f"SLê±°ë¦¬: {lp*100:.2f}%\n"
             f"{_binance_footer(symbol_upper)}"
         )
         pending_entry.pop(symbol_upper, None)
@@ -346,7 +346,7 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
 
     res = open_position_market(symbol_upper.lower(), direction, qty)
     if not res:
-        tg.send_message(f"?? ï§??? ?ã…½??#{symbol_upper}\n{_binance_footer(symbol_upper)}")
+        tg.send_message(f"â? ì§?ì?? ì?¤í?¨ #{symbol_upper}\n{_binance_footer(symbol_upper)}")
         pending_entry.pop(symbol_upper, None)
         return
 
@@ -362,9 +362,9 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
             pass
         close_position_market(symbol_upper.lower(), direction, qty_f)
         tg.send_message(
-            f"?ì¢‘íˆ˜ ï§£ë‹¿ê» ?? SLï§¦?ç¥?æ€¨??? ï§??? ï§£???n"
+            f"â? ï¸ ì²´ê²° í?? SLìº¡ ì´?ê³¼ â?? ì¦?ì?? ì²­ì?°\n"
             f"#{symbol_upper}\n"
-            f"ï§???: {_fmt(entry)}\n"
+            f"ì§?ì??: {_fmt(entry)}\n"
             f"SL: {_fmt(sl0)}\n"
             f"{_binance_footer(symbol_upper)}"
         )
@@ -390,19 +390,19 @@ def execute_entry(symbol_upper: str, pe: Dict[str, Any]) -> None:
         save_state(st)
         pending_entry.pop(symbol_upper, None)
 
-    side_ico = "???" if direction == "long" else "???"
+    side_ico = "ğ???" if direction == "long" else "ğ???"
     tg.send_message(
-        f"{side_ico} ï§??? {direction.upper()}\n"
+        f"{side_ico} ì§?ì?? {direction.upper()}\n"
         f"#{symbol_upper}\n"
-        f"ï§???åª›?: {_fmt(entry)}\n"
-        f"ç¥?æ¹²?SL: {_fmt(sl0)}\n"
-        f"ATR(?ì¢?ëªƒ?): {_fmt(signal_atr)}\n"
+        f"ì§?ì??ê°?: {_fmt(entry)}\n"
+        f"ì´?ê¸° SL: {_fmt(sl0)}\n"
+        f"ATR(ì? í?¸ë´?): {_fmt(signal_atr)}\n"
         f"{_binance_footer(symbol_upper)}"
     )
     if high_vol:
         tg.send_message(
-            f"??æ€¨ì¢Š?????ï§??? (?ÑŠì” ï§? ç•°???): #{symbol_upper} {direction.upper()}\n"
-            f"SLå«„ê³•â”: {lp*100:.2f}% ?ÑŠì” ï§?: {HIGH_VOL_POSITION_SIZE_PCT*100:.1f}%\n"
+            f"â?¡ ê³ ë³?ë?ì?± ì§?ì?? (ì?¬ì´ì¦? ì¶?ì??): #{symbol_upper} {direction.upper()}\n"
+            f"SLê±°ë¦¬: {lp*100:.2f}% ì?¬ì´ì¦?: {HIGH_VOL_POSITION_SIZE_PCT*100:.1f}%\n"
             f"{_binance_footer(symbol_upper)}"
         )
     logger.info("ENTRY %s %s entry=%s sl=%s atr=%s qty=%s high_vol=%s", symbol_upper, direction, entry, sl0, signal_atr, qty_f, high_vol)
@@ -458,7 +458,7 @@ def process_kline(symbol_lower: str, k: Dict[str, Any]) -> None:
 
         pos["bars_since_entry"] = int(pos.get("bars_since_entry", 0)) + 1
 
-        # ?ëªƒ??????ê¹Š??: 15éº? ????éŠ? é†«?åª›?ï§? ?ÑŠ??(?ì¢?ëªƒ? ATR ? è«›ê³—??)
+        # í?¸ë ?ì¼ í??ì?±í??: 15ë¶? í??ì ?ë´? ì¢?ê°?ë§? ì?¬ì?© (ì? í?¸ë´? ATR Ã? ë°°ì??)
         if not bool(pos.get("trail_active")) and sig_atr > 0:
             thr = sig_atr * TRAIL_ACTIVATE_MULTIPLIER
             act = False
@@ -475,9 +475,9 @@ def process_kline(symbol_lower: str, k: Dict[str, Any]) -> None:
                         upsert_position(st, symbol_upper, pos)
                         save_state(st)
                 tg.send_message(
-                    f"????ëªƒ??ì‡°ì­… ???ê¹Š??: #{symbol_upper} {direction.upper()}\n"
-                    f"ï§???åª›?: {_fmt(entry)}\n"
-                    f"???ê¹Š??åª›?: {_fmt(c)}\n"
+                    f"ğ??¯ í?¸ë ?ì¼ë§ í??ì?±í??: #{symbol_upper} {direction.upper()}\n"
+                    f"ì§?ì??ê°?: {_fmt(entry)}\n"
+                    f"í??ì?±í??ê°?: {_fmt(c)}\n"
                     f"{_binance_footer(symbol_upper)}"
                 )
                 logger.info(
@@ -504,9 +504,9 @@ def process_kline(symbol_lower: str, k: Dict[str, Any]) -> None:
                     save_state(st)
             if chg:
                 tg.send_message(
-                    f"??? SL åª›ê¹†??#{symbol_upper}\n"
-                    f"?ëŒ? SL: {_fmt(old_sl)}\n"
-                    f"?? SL: {_fmt(new_sl)}\n"
+                    f"ğ??? SL ê°±ì?  #{symbol_upper}\n"
+                    f"ì´ì ? SL: {_fmt(old_sl)}\n"
+                    f"ì?? SL: {_fmt(new_sl)}\n"
                     f"{_binance_footer(symbol_upper)}"
                 )
         else:
@@ -572,7 +572,7 @@ def mark_monitor_loop() -> None:
                 except Exception:
                     continue
 
-                # 1????: ç¥?æ¹²??ëªƒ???SL
+                # 1ì??ì??: ì´?ê¸°/í?¸ë ?ì¼ SL
                 hit = False
                 if direction == "long" and mk <= sl:
                     hit = True
@@ -597,8 +597,8 @@ def mark_monitor_loop() -> None:
                     tg.send_message(
                         f"{_sl_close_title(pnl_pct)}\n"
                         f"#{sym} {direction.upper()}\n"
-                        f"ï§£??ê³Œ?(ï§???: {_fmt(mk)}\n"
-                        f"?ë¨¯ì”¡: {pnl_pct:+.2f}%\n"
+                        f"ì²­ì?°ê°?(ë§?í¬): {_fmt(mk)}\n"
+                        f"ì?ìµ: {pnl_pct:+.2f}%\n"
                         f"{_binance_footer(sym)}"
                     )
                     logger.info("CLOSE %s mark=%s sl=%s pnl%%=%s", sym, mk, sl, pnl_pct)
@@ -607,7 +607,7 @@ def mark_monitor_loop() -> None:
         except Exception as e:
             logger.exception("mark_monitor: %s", e)
             try:
-                tg.send_message(f"?? ï§???åª›ë¨¯?? ?ã…»?\n{e!s}")
+                tg.send_message(f"â? ë§?í¬ ê°ì?? ì?¤ë¥?\n{e!s}")
             except Exception:
                 pass
 
@@ -668,24 +668,24 @@ def cmd_status() -> None:
     eq = get_account_equity_usdt()
     st = "ON" if bot_active else "OFF"
     tg.send_message(
-        f"??? BB éŠ?\n"
-        f"?ì¢‰?ï§???: {st}\n"
-        f"??æ€¨? {eq:.2f} USDT\n"
-        f"?ÑŠ???: {n}/{MAX_CONCURRENT_POSITIONS}\n"
-        f"åª›ë¨¯??: {len(tracked_symbols)} ?Ñ‰ë‚µ"
+        f"ğ??? BB ë´?\n"
+        f"ì? ê·?ì§?ì??: {st}\n"
+        f"ì??ê³ : {eq:.2f} USDT\n"
+        f"í¬ì§?ì??: {n}/{MAX_CONCURRENT_POSITIONS}\n"
+        f"ê°ì??: {len(tracked_symbols)} ì?¬ë³¼"
     )
 
 
 def cmd_stop() -> None:
     global bot_active
     bot_active = False
-    tg.send_message("?ëªŒíˆ˜ ?ì¢‰? ï§??? ä»¥?ï§?")
+    tg.send_message("â¸ï¸ ì? ê·? ì§?ì?? ì¤?ì§?")
 
 
 def cmd_restart() -> None:
     global bot_active
     bot_active = True
-    tg.send_message("?ë°íˆ˜ ?ì¢‰? ï§??? ?Ñˆ?")
+    tg.send_message("â?¶ï¸ ì? ê·? ì§?ì?? ì?¬ê°?")
 
 
 def cmd_closeall() -> None:
@@ -708,7 +708,7 @@ def cmd_closeall() -> None:
         st = load_state()
         st["positions"] = {}
         save_state(st)
-    tg.send_message("???CLOSEALL ??çŒ·?")
+    tg.send_message("ğ??  CLOSEALL ì??ë£?")
 
 
 def _on_message(ws, message: str) -> None:
@@ -782,12 +782,12 @@ def universe_refresh_loop() -> None:
             start_websockets(list(merged))
             _last_universe_refresh_ts = time.time()
             tg.send_message(
-                f"??? ?ì¢Š??è¸°???åª›ê¹†??({SYMBOL_REFRESH_INTERVAL}s)\n????{len(merged)}åª›?"
+                f"ğ??? ì? ë??ë²?ì?¤ ê°±ì?  ({SYMBOL_REFRESH_INTERVAL}s)\në??ì? {len(merged)}ê°?"
             )
         except Exception as e:
             logger.exception("universe_refresh: %s", e)
             try:
-                tg.send_message(f"?? ?ì¢Š??è¸°???åª›ê¹†???ã…»?\n{e!s}")
+                tg.send_message(f"â? ì? ë??ë²?ì?¤ ê°±ì?  ì?¤ë¥?\n{e!s}")
             except Exception:
                 pass
 
@@ -808,7 +808,7 @@ def main() -> None:
 
     uni = select_universe()
     if not uni:
-        tg.send_message("?? ?ì¢Š??è¸°???è­°ê³ ?? ?ã…½??)
+        tg.send_message("â? ì? ë??ë²?ì?¤ ì¡°í?? ì?¤í?¨")
         remove_lock()
         return
 
@@ -819,13 +819,13 @@ def main() -> None:
     _last_universe_refresh_ts = time.time()
 
     tg.send_message(
-        f"??? BB ?ã…½?ëŒ? éŠ? ????\n"
-        f"15éº?éŠ? ì¨Œ ??è¸°? {DEFAULT_LEVERAGE}x ì¨Œ ï§??? {POSITION_RISK_PCT*100:.0f}% "
-        f"(æ€¨ì¢Š??? {HIGH_VOL_POSITION_SIZE_PCT*100:.1f}%) ì¨Œ ï§¤??? {MAX_CONCURRENT_POSITIONS}?ÑŠ???\n"
-        f"SL: ATR{ATR_PERIOD}?{ATR_MULTIPLIER} ì¨Œ SLï§¦??ì‡°???MAX_SL_PCT*100:.0f}% æ€¨ì¢Š?????HIGH_VOL_MAX_SL_PCT*100:.0f}%\n"
-        f"?ëªƒ??????? 15éº? é†«?åª›?(ï§???åª›? ì§¹ ?ì¢?í‡TR?{TRAIL_ACTIVATE_MULTIPLIER}) ì¨Œ "
-        f"èª˜ëª…????{TIME_EXIT_BARS}éŠ? ?? ??åª›?ç¥?æ€¨?ï§£???n"
-        f"åª›ë¨¯?? ?Ñ‰ë‚µ: {len(tracked_symbols)}"
+        f"ğ??? BB ì?¤í?´ì¦? ë´? ì??ì??\n"
+        f"15ë¶?ë´? Â· ë ?ë²? {DEFAULT_LEVERAGE}x Â· ì§?ì?? {POSITION_RISK_PCT*100:.0f}% "
+        f"(ê³ ë³?ë? {HIGH_VOL_POSITION_SIZE_PCT*100:.1f}%) Â· ìµ?ë?? {MAX_CONCURRENT_POSITIONS}í¬ì§?ì??\n"
+        f"SL: ATR{ATR_PERIOD}Ã?{ATR_MULTIPLIER} Â· SLìº¡ ì¼ë°?â?¤{MAX_SL_PCT*100:.0f}% ê³ ë³?ë?â?¤{HIGH_VOL_MAX_SL_PCT*100:.0f}%\n"
+        f"í?¸ë ?ì¼ í??ì?±: 15ë¶? ì¢?ê°?(ì§?ì??ê°? Â± ì? í?¸ATRÃ?{TRAIL_ACTIVATE_MULTIPLIER}) Â· "
+        f"ë¯¸í??ì?± {TIME_EXIT_BARS}ë´? ì?? ì??ê°?ì´?ê³¼ ì²­ì?°\n"
+        f"ê°ì?? ì?¬ë³¼: {len(tracked_symbols)}"
     )
 
     threading.Thread(target=mark_monitor_loop, daemon=True).start()
@@ -838,7 +838,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        tg.send_message("??? éŠ? é†«?çŒ·?")
+        tg.send_message("ğ??? ë´? ì¢?ë£?")
         remove_lock()
 
 
@@ -848,9 +848,8 @@ if __name__ == "__main__":
     except Exception as e:
         logging.exception("fatal: %s", e)
         try:
-            tg.send_message(f"???éŠ? ç§»?ï§????ã…»?\n{e!s}")
+            tg.send_message(f"ğ??¥ ë´? ì¹?ëª?ì  ì?¤ë¥?\n{e!s}")
         except Exception:
             pass
         remove_lock()
         sys.exit(1)
-
