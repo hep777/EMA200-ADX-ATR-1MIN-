@@ -681,6 +681,10 @@ def cmd_status() -> None:
     )
 
 
+def cmd_help() -> None:
+    tg.send_help_message()
+
+
 def cmd_stop() -> None:
     tg.send_message("🛑 프로세스 종료 요청 수신. 곧 종료됩니다.")
     shutdown_event.set()
@@ -804,6 +808,7 @@ def main() -> None:
     check_single_instance()
 
     tg.register_command("status", cmd_status)
+    tg.register_command("help", cmd_help)
     tg.register_command("stop", cmd_stop)
     tg.register_command("closeall", cmd_closeall)
     tg.start_polling()
@@ -830,7 +835,7 @@ def main() -> None:
         f"스윙 {SWING_LEFT_BARS}/{SWING_RIGHT_BARS} · 룩백 {SWING_LOOKBACK_BARS} · 터치≥{TRENDLINE_MIN_POINTS} · 트레일×{TRAILING_RANGE_RATIO}\n"
         f"마크폴링 {MARK_POLL_INTERVAL_SEC:.0f}s\n"
         f"감시 {len(tracked_symbols)} 심볼 (BTC/ETH 제외)\n"
-        f"텔레그램: /status /stop /closeall"
+        f"텔레그램: /status /help /stop /closeall"
     )
 
     threading.Thread(target=mark_monitor_loop, daemon=True).start()

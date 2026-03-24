@@ -32,6 +32,20 @@ def send_message(text: str) -> None:
         logger.error(f"Telegram send failed: {e}")
 
 
+def send_help_message() -> None:
+    """등록된 명령 안내 (/help · 알 수 없는 명령 시 동일)."""
+    send_message(
+        "<b>📋 Trendline 봇 명령</b>\n\n"
+        "/status — 잔고·포지션·추세선·대기 진입 수\n"
+        "/stop — 봇 프로세스 완전 종료 (신규 진입만 막는 게 아님)\n"
+        "/closeall — 거래소에 열린 포지션 전부 시장가 청산\n"
+        "/help — 이 도움말\n\n"
+        "<b>봇 다시 켜기 (systemd)</b>\n"
+        "<code>sudo systemctl start atr_bot.service</code>\n"
+        "또는 <code>sudo systemctl restart atr_bot.service</code>"
+    )
+
+
 def register_command(command: str, callback: Callable[[], None]) -> None:
     _cmd_callbacks[command.lower()] = callback
 
@@ -80,15 +94,8 @@ def _poll_loop() -> None:
                 cmd = text.lstrip("/").split()[0].lower()
                 cb = _cmd_callbacks.get(cmd)
                 if cb is None:
-                    send_message(
-                        "❓ 알 수 없는 명령\n\n"
-                        "<b>Trendline 봇</b>\n"
-                        "/status — 잔고·포지션·추세선\n"
-                        "/stop — 프로세스 종료 (봇 프로세스 완전 종료)\n"
-                        "/closeall — 열린 포지션 전부 시장가 청산\n"
-                        "다시 켜기: 서버에서 "
-                        "<code>sudo systemctl start atr_bot.service</code> 또는 nohup 스크립트"
-                    )
+                    send_message("❓ 알 수 없는 명령입니다.\n")
+                    send_help_message()
                     continue
 
                 cb()
