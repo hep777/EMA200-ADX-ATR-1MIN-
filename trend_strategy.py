@@ -88,7 +88,7 @@ def fit_outer_tangent_line(
 
             x_span = int(x2 - x1)
             if best is None or is_better(touches, x_span, i, j, best):
-                best = cand
+                best = (touches, x_span, i, j)
 
     if best is None:
         return None
