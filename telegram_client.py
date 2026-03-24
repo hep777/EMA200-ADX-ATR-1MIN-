@@ -81,12 +81,13 @@ def _poll_loop() -> None:
                 cb = _cmd_callbacks.get(cmd)
                 if cb is None:
                     send_message(
-                        "❓ Unknown command\n\n"
-                        "/status — status\n"
-                        "/stop — stop new entries\n"
-                        "/restart — resume new entries\n"
-                        "/closeall — close all positions\n"
-                        "(restart process는 서버에서 수동 재시작)"
+                        "❓ 알 수 없는 명령\n\n"
+                        "<b>Trendline 봇</b>\n"
+                        "/status — 잔고·포지션·추세선\n"
+                        "/stop — 프로세스 종료 (봇 프로세스 완전 종료)\n"
+                        "/closeall — 열린 포지션 전부 시장가 청산\n"
+                        "다시 켜기: 서버에서 "
+                        "<code>sudo systemctl start atr_bot.service</code> 또는 nohup 스크립트"
                     )
                     continue
 

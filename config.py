@@ -1,5 +1,5 @@
 """
-Trendline breakout/fakeout 1m bot.
+Trendline breakout/fakeout 1m bot (USDT Perp).
 환경변수(.env) 로드.
 """
 
@@ -36,18 +36,6 @@ def _get_env_str(name: str, default: str = "") -> str:
     return v
 
 
-def _get_env_bool(name: str, default: bool) -> bool:
-    v = os.getenv(name)
-    if v is None or v == "":
-        return default
-    s = v.strip().lower()
-    if s in ("1", "true", "yes", "on"):
-        return True
-    if s in ("0", "false", "no", "off"):
-        return False
-    return default
-
-
 # Secrets
 BINANCE_API_KEY = _get_env_str("BINANCE_API_KEY")
 BINANCE_API_SECRET = _get_env_str("BINANCE_API_SECRET")
@@ -62,7 +50,7 @@ def validate_secrets() -> None:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID")
 
 
-# Risk / execution (스펙 이름 + 하위 호환)
+# Risk / execution
 LEVERAGE = _get_env_int("LEVERAGE", 10)
 DEFAULT_LEVERAGE = LEVERAGE
 DESIRED_LEVERAGE = DEFAULT_LEVERAGE
@@ -80,24 +68,23 @@ EXCLUDE_SYMBOLS = [
     if s.strip()
 ]
 
-# Trendline strategy
+# 1단계: 마감 봉 고저폭 / 종가 ≥ 이 값일 때만 추세선·신호 처리
+VOLATILITY_MIN_BAR_RANGE_PCT = _get_env_float("VOLATILITY_MIN_BAR_RANGE_PCT", 0.012)
+
+# 추세선 (최외곽 접선, 스윙 좌우 30, 룩백 110)
 SWING_LOOKBACK_BARS = _get_env_int("SWING_LOOKBACK_BARS", 110)
 SWING_LEFT_BARS = _get_env_int("SWING_LEFT_BARS", 30)
 SWING_RIGHT_BARS = _get_env_int("SWING_RIGHT_BARS", 30)
 TRENDLINE_MIN_POINTS = _get_env_int("TRENDLINE_MIN_POINTS", 3)
 TRENDLINE_TOUCH_TOLERANCE_PCT = _get_env_float("TRENDLINE_TOUCH_TOLERANCE_PCT", 0.001)
+
 VOLUME_AVG_PERIOD = _get_env_int("VOLUME_AVG_PERIOD", 20)
-BREAKOUT_TP_PCT = _get_env_float("BREAKOUT_TP_PCT", 0.007)
-BREAKOUT_TP_CLOSE_RATIO = _get_env_float("BREAKOUT_TP_CLOSE_RATIO", 0.4)
-FAKEOUT_TP_PCT = _get_env_float("FAKEOUT_TP_PCT", 0.01)
 
-# 변동성 필터 (0이면 해당 필터 비활성)
-ENTRY_ATR_PERIOD = _get_env_int("ENTRY_ATR_PERIOD", 14)
-MIN_ENTRY_ATR_PCT = _get_env_float("MIN_ENTRY_ATR_PCT", 0.003)
-MIN_UNIVERSE_24H_RANGE_PCT = _get_env_float("MIN_UNIVERSE_24H_RANGE_PCT", 0.01)
+# 트레일링: (신호 봉 고가-저가) × 비율
+TRAILING_RANGE_RATIO = _get_env_float("TRAILING_RANGE_RATIO", 0.5)
 
-# Polling / universe
-MARK_PRICE_POLL_INTERVAL = _get_env_float("MARK_PRICE_POLL_INTERVAL", 1.0)
+# 마크 폴링 (초)
+MARK_PRICE_POLL_INTERVAL = _get_env_float("MARK_PRICE_POLL_INTERVAL", 3.0)
 MARK_POLL_INTERVAL_SEC = MARK_PRICE_POLL_INTERVAL
 
 SYMBOL_REFRESH_INTERVAL = _get_env_int("SYMBOL_REFRESH_INTERVAL", 3600)

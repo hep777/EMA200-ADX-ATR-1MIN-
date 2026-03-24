@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from collections import deque
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 import websocket
 
@@ -27,18 +27,12 @@ from binance_client import (
 )
 from config import (
     API_MAX_RETRIES,
-    BREAKOUT_TP_CLOSE_RATIO,
-    BREAKOUT_TP_PCT,
     DEFAULT_LEVERAGE,
-    ENTRY_ATR_PERIOD,
-    FAKEOUT_TP_PCT,
     KLINES_BOOTSTRAP_LIMIT,
     LOCK_FILE,
     LOG_FILE,
     MARK_POLL_INTERVAL_SEC,
     MAX_CONCURRENT_POSITIONS,
-    MIN_ENTRY_ATR_PCT,
-    MIN_UNIVERSE_24H_RANGE_PCT,
     POSITION_RISK_PCT,
     STREAM_BATCH_SIZE,
     SWING_LEFT_BARS,
@@ -47,13 +41,14 @@ from config import (
     SYMBOL_REFRESH_INTERVAL,
     TRENDLINE_MIN_POINTS,
     TRENDLINE_TOUCH_TOLERANCE_PCT,
+    TRAILING_RANGE_RATIO,
     UNIVERSE_TOP_N,
+    VOLATILITY_MIN_BAR_RANGE_PCT,
     VOLUME_AVG_PERIOD,
     validate_secrets,
     WEBSOCKET_PING_INTERVAL,
     WEBSOCKET_PING_TIMEOUT,
 )
-from indicators import atr_pct_wilder_last
 from state_manager import load_state, remove_position, save_state, upsert_position
 from trend_strategy import detect_confirmed_swing, fit_outer_tangent_line, line_value
 
@@ -142,6 +137,25 @@ def _round_order_qty(symbol_upper: str, qty: float) -> float:
     return max(0.0, q)
 
 
+def _last_bar_range_pct(symbol_upper: str) -> Optional[float]:
+    s = symbol_data.get(symbol_upper)
+    if not s or len(s["close"]) < 1:
+        return None
+    h = float(s["high"][-1])
+    l = float(s["low"][-1])
+    c = float(s["close"][-1])
+    if c <= 0:
+        return None
+    return (h - l) / c
+
+
+def _last_bar_volatile(symbol_upper: str) -> bool:
+    p = _last_bar_range_pct(symbol_upper)
+    if p is None:
+        return False
+    return p >= VOLATILITY_MIN_BAR_RANGE_PCT
+
+
 def persist_runtime_state() -> None:
     st = load_state()
     st["pending_entries"] = pending_entries
@@ -192,7 +206,8 @@ def bootstrap_symbol(symbol_upper: str) -> None:
         seq += 1
     s["last_seq"] = seq - 1
     rebuild_swings(symbol_upper)
-    rebuild_lines(symbol_upper)
+    if _last_bar_volatile(symbol_upper):
+        rebuild_lines(symbol_upper)
 
 
 def rebuild_swings(symbol_upper: str) -> None:
@@ -274,7 +289,7 @@ def update_swing_and_invalidation(symbol_upper: str) -> None:
             up = t.get("up")
             if up and float(d["swing_high"]) < float(up["last_swing_price"]):
                 t["up"] = None
-                _close_breakout_on_trendline_invalid(symbol_upper, "up")
+                _close_on_trendline_invalid(symbol_upper, "up")
     if "swing_low" in d:
         ls = sp["lows"]
         if not any(int(p["seq"]) == seq for p in ls):
@@ -282,8 +297,7 @@ def update_swing_and_invalidation(symbol_upper: str) -> None:
             dn = t.get("down")
             if dn and float(d["swing_low"]) > float(dn["last_swing_price"]):
                 t["down"] = None
-                _close_breakout_on_trendline_invalid(symbol_upper, "down")
-    rebuild_lines(symbol_upper)
+                _close_on_trendline_invalid(symbol_upper, "down")
 
 
 def merge_universe_with_positions(symbols: List[str]) -> List[str]:
@@ -301,7 +315,7 @@ def select_universe() -> List[str]:
             get_top_usdt_perpet_by_quote_volume,
             UNIVERSE_TOP_N,
             ("BTCUSDT", "ETHUSDT"),
-            min_24h_range_pct=MIN_UNIVERSE_24H_RANGE_PCT,
+            min_24h_range_pct=0.0,
         )
         or []
     )
@@ -342,17 +356,30 @@ def execute_pending_if_due(symbol_upper: str, bar_open_ms: int) -> None:
         tg.send_message(f"❌ 진입 실패 #{symbol_upper}")
         return
 
-    pos = {
+    sh = float(pe.get("signal_high", 0))
+    sl_ = float(pe.get("signal_low", 0))
+    bar_range = max(0.0, sh - sl_)
+    tw = bar_range * TRAILING_RANGE_RATIO
+    entry_px = float(opened["entry_price"])
+
+    pos: Dict[str, Any] = {
         "symbol": symbol_upper,
         "direction": direction,
-        "entry_price": float(opened["entry_price"]),
+        "entry_price": entry_px,
         "quantity": float(opened["quantity"]),
         "initial_quantity": float(opened["quantity"]),
         "entry_kind": str(pe["entry_kind"]),
-        "partial_taken": False,
         "fake_ref_high": float(pe.get("fake_ref_high", 0)),
         "fake_ref_low": float(pe.get("fake_ref_low", 0)),
+        "signal_high": sh,
+        "signal_low": sl_,
+        "trailing_width": tw,
     }
+    if direction == "long":
+        pos["peak_price"] = max(entry_px, mark)
+    else:
+        pos["trough_price"] = min(entry_px, mark)
+
     active_positions[symbol_upper] = pos
     pending_entries.pop(symbol_upper, None)
     persist_runtime_state()
@@ -361,6 +388,7 @@ def execute_pending_if_due(symbol_upper: str, bar_open_ms: int) -> None:
         f"#{symbol_upper}\n"
         f"진입가: {_fmt(pos['entry_price'])}\n"
         f"수량: {pos['quantity']}\n"
+        f"트레일폭: {_fmt(tw)} (신호봉 고저×{TRAILING_RANGE_RATIO})\n"
         f'<a href="{_binance_link(symbol_upper)}">Binance</a>'
     )
 
@@ -387,17 +415,25 @@ def close_full_position(symbol_upper: str, pos: Dict[str, Any], reason: str, mar
     )
 
 
-def _close_breakout_on_trendline_invalid(symbol_upper: str, invalidated: str) -> None:
-    """invalidated: 'up' → 롱 브레이크아웃, 'down' → 숏 브레이크아웃 청산 (1차 익절 후 잔량 포함)."""
+def _close_on_trendline_invalid(symbol_upper: str, invalidated: str) -> None:
+    """상승선 무효: 롱 돌파 + 숏 거짓돌파. 하락선 무효: 숏 돌파 + 롱 거짓돌파."""
     pos = active_positions.get(symbol_upper)
     if not pos:
         return
-    if str(pos.get("entry_kind")) != "breakout":
-        return
     direction = str(pos["direction"])
-    if invalidated == "up" and direction != "long":
-        return
-    if invalidated == "down" and direction != "short":
+    kind = str(pos.get("entry_kind", "breakout"))
+    should_close = False
+    if invalidated == "up":
+        if kind == "breakout" and direction == "long":
+            should_close = True
+        if kind == "fakeout" and direction == "short":
+            should_close = True
+    elif invalidated == "down":
+        if kind == "breakout" and direction == "short":
+            should_close = True
+        if kind == "fakeout" and direction == "long":
+            should_close = True
+    if not should_close:
         return
     try:
         mark = float(get_mark_price(symbol_upper))
@@ -418,29 +454,25 @@ def process_position_on_closed_bar(symbol_upper: str, close_price: float, prev_c
             cur_line = line_value(float(t["up"]["slope"]), float(t["up"]["intercept"]), seq)
             if close_price < cur_line:
                 mark = float(get_mark_price(symbol_upper))
-                close_full_position(symbol_upper, pos, "추세선 이탈", mark)
+                close_full_position(symbol_upper, pos, "추세선 이탈(손절)", mark)
         elif direction == "short" and t.get("down"):
             cur_line = line_value(float(t["down"]["slope"]), float(t["down"]["intercept"]), seq)
             if close_price > cur_line:
                 mark = float(get_mark_price(symbol_upper))
-                close_full_position(symbol_upper, pos, "추세선 이탈", mark)
+                close_full_position(symbol_upper, pos, "추세선 이탈(손절)", mark)
     _ = prev_close
 
 
 def process_closed_bar_signal(symbol_upper: str) -> None:
+    if not _last_bar_volatile(symbol_upper):
+        return
     if symbol_upper in active_positions or symbol_upper in pending_entries:
         return
     if len(active_positions) >= MAX_CONCURRENT_POSITIONS:
         return
     s = symbol_data[symbol_upper]
-    if len(s["close"]) < max(3, VOLUME_AVG_PERIOD + 1, ENTRY_ATR_PERIOD):
+    if len(s["close"]) < max(3, VOLUME_AVG_PERIOD + 1):
         return
-    if MIN_ENTRY_ATR_PCT > 0.0:
-        ap = atr_pct_wilder_last(
-            list(s["high"]), list(s["low"]), list(s["close"]), ENTRY_ATR_PERIOD
-        )
-        if ap is None or ap < MIN_ENTRY_ATR_PCT:
-            return
     seq_now = int(s["last_seq"])
     prev_seq = seq_now - 1
     c_prev = float(s["close"][-2])
@@ -461,7 +493,13 @@ def process_closed_bar_signal(symbol_upper: str) -> None:
         crossed_up = c_prev < up_prev and c_now > up_now and v_now >= avg_vol
         fake_short = h_now >= up_now and c_now < up_now
         if crossed_up:
-            pending_entries[symbol_upper] = {"direction": "long", "entry_kind": "breakout", "next_open_ms": next_open_ms}
+            pending_entries[symbol_upper] = {
+                "direction": "long",
+                "entry_kind": "breakout",
+                "next_open_ms": next_open_ms,
+                "signal_high": h_now,
+                "signal_low": l_now,
+            }
             persist_runtime_state()
             return
         if fake_short:
@@ -470,6 +508,8 @@ def process_closed_bar_signal(symbol_upper: str) -> None:
                 "entry_kind": "fakeout",
                 "next_open_ms": next_open_ms,
                 "fake_ref_high": h_now,
+                "signal_high": h_now,
+                "signal_low": l_now,
             }
             persist_runtime_state()
             return
@@ -479,7 +519,13 @@ def process_closed_bar_signal(symbol_upper: str) -> None:
         crossed_dn = c_prev > dn_prev and c_now < dn_now and v_now >= avg_vol
         fake_long = l_now <= dn_now and c_now > dn_now
         if crossed_dn:
-            pending_entries[symbol_upper] = {"direction": "short", "entry_kind": "breakout", "next_open_ms": next_open_ms}
+            pending_entries[symbol_upper] = {
+                "direction": "short",
+                "entry_kind": "breakout",
+                "next_open_ms": next_open_ms,
+                "signal_high": h_now,
+                "signal_low": l_now,
+            }
             persist_runtime_state()
             return
         if fake_long:
@@ -488,6 +534,8 @@ def process_closed_bar_signal(symbol_upper: str) -> None:
                 "entry_kind": "fakeout",
                 "next_open_ms": next_open_ms,
                 "fake_ref_low": l_now,
+                "signal_high": h_now,
+                "signal_low": l_now,
             }
             persist_runtime_state()
 
@@ -516,9 +564,12 @@ def process_kline(symbol_lower: str, k: Dict[str, Any]) -> None:
     s["volume"].append(float(k["v"]))
     s["last_close_time"] = bar_close_ms
     update_swing_and_invalidation(symbol_upper)
+    if _last_bar_volatile(symbol_upper):
+        rebuild_lines(symbol_upper)
     prev_close = float(s["close"][-2]) if len(s["close"]) >= 2 else float(s["close"][-1])
     process_position_on_closed_bar(symbol_upper, float(s["close"][-1]), prev_close, seq)
-    process_closed_bar_signal(symbol_upper)
+    if _last_bar_volatile(symbol_upper):
+        process_closed_bar_signal(symbol_upper)
 
 
 def mark_monitor_loop() -> None:
@@ -529,38 +580,43 @@ def mark_monitor_loop() -> None:
             for sym, pos in snap:
                 mark = float(get_mark_price(sym))
                 direction = str(pos["direction"])
-                entry = float(pos["entry_price"])
                 qty = float(pos["quantity"])
                 if qty <= 0:
                     continue
-                if pos["entry_kind"] == "breakout":
-                    if not bool(pos.get("partial_taken")):
-                        hit = mark >= entry * (1.0 + BREAKOUT_TP_PCT) if direction == "long" else mark <= entry * (1.0 - BREAKOUT_TP_PCT)
-                        if hit:
-                            close_qty = _round_order_qty(sym, qty * BREAKOUT_TP_CLOSE_RATIO)
-                            if close_qty <= 0.0 or close_qty >= qty:
-                                close_full_position(sym, pos, "1차 익절 수량 보정(전량)", mark)
-                                continue
-                            close_position_market(sym.lower(), direction, close_qty)
-                            pos["quantity"] = _round_order_qty(sym, max(0.0, qty - close_qty))
-                            pos["partial_taken"] = True
+                kind = str(pos.get("entry_kind", "breakout"))
+                tw = float(pos.get("trailing_width", 0.0))
+
+                if kind == "fakeout":
+                    if direction == "short" and mark > float(pos.get("fake_ref_high", 0)):
+                        close_full_position(sym, pos, "거짓돌파 손절(고가 상향)", mark)
+                        continue
+                    if direction == "long" and float(pos.get("fake_ref_low", 0)) > 0 and mark < float(
+                        pos.get("fake_ref_low", 0)
+                    ):
+                        close_full_position(sym, pos, "거짓돌파 손절(저가 하향)", mark)
+                        continue
+
+                if tw > 0:
+                    if direction == "long":
+                        peak = float(pos.get("peak_price", mark))
+                        if mark > peak:
+                            peak = mark
+                            pos["peak_price"] = peak
                             active_positions[sym] = pos
                             persist_runtime_state()
-                            tg.send_message(
-                                f"✅ 1차 익절 40% #{sym} ({direction.upper()})\n"
-                                f"익절수량: {close_qty}\n마크: {_fmt(mark)}"
-                            )
-                else:
-                    tp_hit = mark >= entry * (1.0 + FAKEOUT_TP_PCT) if direction == "long" else mark <= entry * (1.0 - FAKEOUT_TP_PCT)
-                    if tp_hit:
-                        close_full_position(sym, pos, "거짓돌파 TP +1%", mark)
-                        continue
-                    if direction == "short" and mark > float(pos.get("fake_ref_high", 0)):
-                        close_full_position(sym, pos, "거짓돌파 기준 고가 상향", mark)
-                        continue
-                    if direction == "long" and mark < float(pos.get("fake_ref_low", 0)):
-                        close_full_position(sym, pos, "거짓돌파 기준 저가 하향", mark)
-                        continue
+                        if mark <= peak - tw:
+                            close_full_position(sym, pos, "트레일링 청산", mark)
+                            continue
+                    else:
+                        trough = float(pos.get("trough_price", mark))
+                        if mark < trough:
+                            trough = mark
+                            pos["trough_price"] = trough
+                            active_positions[sym] = pos
+                            persist_runtime_state()
+                        if mark >= trough + tw:
+                            close_full_position(sym, pos, "트레일링 청산", mark)
+                            continue
         except Exception as e:
             logger.exception("mark_monitor: %s", e)
             tg.send_message(f"❌ 마크 감시 오류\n{e!s}")
@@ -583,9 +639,15 @@ def recover_positions() -> None:
         base["quantity"] = qty
         base.setdefault("initial_quantity", qty)
         base.setdefault("entry_kind", "breakout")
-        base.setdefault("partial_taken", False)
         base.setdefault("fake_ref_high", 0.0)
         base.setdefault("fake_ref_low", 0.0)
+        base.setdefault("signal_high", 0.0)
+        base.setdefault("signal_low", 0.0)
+        base.setdefault("trailing_width", 0.0)
+        if direction == "long":
+            base.setdefault("peak_price", entry)
+        else:
+            base.setdefault("trough_price", entry)
         active_positions[sym] = base
         upsert_position(st, sym, base)
     for sym in list(saved.keys()):
@@ -595,22 +657,72 @@ def recover_positions() -> None:
 
 
 def cmd_status() -> None:
-    eq = get_account_equity_usdt()
+    try:
+        eq = float(get_account_equity_usdt())
+    except Exception:
+        eq = 0.0
     up_lines = sum(1 for v in trendlines.values() if v.get("up"))
     dn_lines = sum(1 for v in trendlines.values() if v.get("down"))
+    lines = []
+    for sym, pos in active_positions.items():
+        tw = float(pos.get("trailing_width", 0))
+        lines.append(f"{sym} {pos['direction']} {pos.get('entry_kind','')} tw={tw:.6f}")
+    pos_detail = "\n".join(lines[:25]) if lines else "(없음)"
+    if len(lines) > 25:
+        pos_detail += f"\n… 외 {len(lines)-25}건"
     tg.send_message(
         f"📊 Trendline Bot\n"
         f"잔고: {eq:.2f} USDT\n"
         f"포지션: {len(active_positions)}/{MAX_CONCURRENT_POSITIONS}\n"
         f"감시: {len(tracked_symbols)} 심볼\n"
         f"상승선: {up_lines} / 하락선: {dn_lines}\n"
-        f"대기진입: {len(pending_entries)}"
+        f"대기진입: {len(pending_entries)}\n"
+        f"--- 보유 ---\n{pos_detail}"
     )
 
 
 def cmd_stop() -> None:
-    tg.send_message("🛑 /stop 수신: 프로세스 종료 시작")
+    tg.send_message("🛑 프로세스 종료 요청 수신. 곧 종료됩니다.")
     shutdown_event.set()
+
+
+def cmd_closeall() -> None:
+    open_ps = api_retry(get_open_positions)
+    if open_ps is None:
+        tg.send_message("❌ 거래소 포지션 조회 실패. 잠시 후 다시 시도하세요.")
+        return
+    closed = 0
+    errors: List[str] = []
+    for p in open_ps:
+        sym = str(p.get("symbol") or "")
+        if not sym:
+            continue
+        direction = str(p["direction"])
+        qty = float(p["amount"])
+        if qty <= 0:
+            continue
+        out = close_position_market(sym.lower(), direction, qty)
+        if out:
+            closed += 1
+            active_positions.pop(sym.upper(), None)
+        else:
+            errors.append(sym)
+    pending_entries.clear()
+    st = load_state()
+    for sym in list(st.get("positions", {}).keys()):
+        remove_position(st, sym)
+    active_positions.clear()
+    st["pending_entries"] = pending_entries
+    st["trendlines"] = trendlines
+    st["swing_points"] = swing_points
+    save_state(st)
+    msg = f"🔴 전량 시장가 청산 요청: 성공 {closed}건"
+    if errors:
+        msg += f"\n실패: {', '.join(errors[:15])}"
+        if len(errors) > 15:
+            msg += f" 외 {len(errors) - 15}건"
+    msg += "\n체결·잔고는 바이낸스에서 확인하세요."
+    tg.send_message(msg)
 
 
 def _on_message(ws, message: str) -> None:
@@ -693,6 +805,7 @@ def main() -> None:
 
     tg.register_command("status", cmd_status)
     tg.register_command("stop", cmd_stop)
+    tg.register_command("closeall", cmd_closeall)
     tg.start_polling()
 
     restore_runtime_state()
@@ -709,19 +822,15 @@ def main() -> None:
 
     persist_runtime_state()
 
-    vol_line = ""
-    if MIN_ENTRY_ATR_PCT > 0.0:
-        vol_line += f"진입 ATR%≥{MIN_ENTRY_ATR_PCT*100:.2f}({ENTRY_ATR_PERIOD}봉) "
-    if MIN_UNIVERSE_24H_RANGE_PCT > 0.0:
-        vol_line += f"유니버스 24h고저≥{MIN_UNIVERSE_24H_RANGE_PCT*100:.1f}% "
-    if not vol_line:
-        vol_line = "변동성필터: 끔 "
     tg.send_message(
         f"🚀 Trendline 봇 시작\n"
-        f"1분봉 · 레버 {DEFAULT_LEVERAGE}x · 진입 {POSITION_RISK_PCT*100:.0f}% · 최대 {MAX_CONCURRENT_POSITIONS}포지션\n"
-        f"스윙: 좌우 {SWING_LEFT_BARS}/{SWING_RIGHT_BARS} · 추세선 최소 터치 {TRENDLINE_MIN_POINTS}회 · 터치허용오차 {TRENDLINE_TOUCH_TOLERANCE_PCT*100:.2f}%\n"
-        f"{vol_line}\n"
-        f"감시 심볼: {len(tracked_symbols)} (BTC/ETH 제외)"
+        f"Binance USDT Perp · 1분봉 · ISOLATED {DEFAULT_LEVERAGE}x\n"
+        f"리스크/트레이드 {POSITION_RISK_PCT*100:.0f}% · 최대 {MAX_CONCURRENT_POSITIONS}포지션\n"
+        f"1단계 변동성: 마감봉 고저/종가 ≥ {VOLATILITY_MIN_BAR_RANGE_PCT*100:.2f}%\n"
+        f"스윙 {SWING_LEFT_BARS}/{SWING_RIGHT_BARS} · 룩백 {SWING_LOOKBACK_BARS} · 터치≥{TRENDLINE_MIN_POINTS} · 트레일×{TRAILING_RANGE_RATIO}\n"
+        f"마크폴링 {MARK_POLL_INTERVAL_SEC:.0f}s\n"
+        f"감시 {len(tracked_symbols)} 심볼 (BTC/ETH 제외)\n"
+        f"텔레그램: /status /stop /closeall"
     )
 
     threading.Thread(target=mark_monitor_loop, daemon=True).start()
