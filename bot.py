@@ -30,12 +30,15 @@ from config import (
     BREAKOUT_TP_CLOSE_RATIO,
     BREAKOUT_TP_PCT,
     DEFAULT_LEVERAGE,
+    ENTRY_ATR_PERIOD,
     FAKEOUT_TP_PCT,
     KLINES_BOOTSTRAP_LIMIT,
     LOCK_FILE,
     LOG_FILE,
     MARK_POLL_INTERVAL_SEC,
     MAX_CONCURRENT_POSITIONS,
+    MIN_ENTRY_ATR_PCT,
+    MIN_UNIVERSE_24H_RANGE_PCT,
     POSITION_RISK_PCT,
     STREAM_BATCH_SIZE,
     SWING_LEFT_BARS,
@@ -50,6 +53,7 @@ from config import (
     WEBSOCKET_PING_INTERVAL,
     WEBSOCKET_PING_TIMEOUT,
 )
+from indicators import atr_pct_wilder_last
 from state_manager import load_state, remove_position, save_state, upsert_position
 from trend_strategy import detect_confirmed_swing, fit_outer_tangent_line, line_value
 
@@ -292,7 +296,15 @@ def merge_universe_with_positions(symbols: List[str]) -> List[str]:
 
 
 def select_universe() -> List[str]:
-    return api_retry(get_top_usdt_perpet_by_quote_volume, UNIVERSE_TOP_N, ("BTCUSDT", "ETHUSDT")) or []
+    return (
+        api_retry(
+            get_top_usdt_perpet_by_quote_volume,
+            UNIVERSE_TOP_N,
+            ("BTCUSDT", "ETHUSDT"),
+            min_24h_range_pct=MIN_UNIVERSE_24H_RANGE_PCT,
+        )
+        or []
+    )
 
 
 def execute_pending_if_due(symbol_upper: str, bar_open_ms: int) -> None:
@@ -421,8 +433,14 @@ def process_closed_bar_signal(symbol_upper: str) -> None:
     if len(active_positions) >= MAX_CONCURRENT_POSITIONS:
         return
     s = symbol_data[symbol_upper]
-    if len(s["close"]) < max(3, VOLUME_AVG_PERIOD + 1):
+    if len(s["close"]) < max(3, VOLUME_AVG_PERIOD + 1, ENTRY_ATR_PERIOD):
         return
+    if MIN_ENTRY_ATR_PCT > 0.0:
+        ap = atr_pct_wilder_last(
+            list(s["high"]), list(s["low"]), list(s["close"]), ENTRY_ATR_PERIOD
+        )
+        if ap is None or ap < MIN_ENTRY_ATR_PCT:
+            return
     seq_now = int(s["last_seq"])
     prev_seq = seq_now - 1
     c_prev = float(s["close"][-2])
@@ -691,10 +709,18 @@ def main() -> None:
 
     persist_runtime_state()
 
+    vol_line = ""
+    if MIN_ENTRY_ATR_PCT > 0.0:
+        vol_line += f"진입 ATR%≥{MIN_ENTRY_ATR_PCT*100:.2f}({ENTRY_ATR_PERIOD}봉) "
+    if MIN_UNIVERSE_24H_RANGE_PCT > 0.0:
+        vol_line += f"유니버스 24h고저≥{MIN_UNIVERSE_24H_RANGE_PCT*100:.1f}% "
+    if not vol_line:
+        vol_line = "변동성필터: 끔 "
     tg.send_message(
         f"🚀 Trendline 봇 시작\n"
         f"1분봉 · 레버 {DEFAULT_LEVERAGE}x · 진입 {POSITION_RISK_PCT*100:.0f}% · 최대 {MAX_CONCURRENT_POSITIONS}포지션\n"
         f"스윙: 좌우 {SWING_LEFT_BARS}/{SWING_RIGHT_BARS} · 추세선 최소 터치 {TRENDLINE_MIN_POINTS}회 · 터치허용오차 {TRENDLINE_TOUCH_TOLERANCE_PCT*100:.2f}%\n"
+        f"{vol_line}\n"
         f"감시 심볼: {len(tracked_symbols)} (BTC/ETH 제외)"
     )
 

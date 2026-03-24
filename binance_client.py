@@ -772,10 +772,12 @@ def place_take_profit_market(
 def get_top_usdt_perpet_by_quote_volume(
     limit: int = 300,
     extra_exclude: Optional[Tuple[str, ...]] = None,
+    min_24h_range_pct: float = 0.0,
 ) -> List[str]:
     """
     24h quoteVolume 기준 상위 limit개 USDT 무기한 선물 심볼 (소문자).
     EXCLUDE_SYMBOLS + extra_exclude 제외.
+    min_24h_range_pct > 0 이면 (24h고가-24h저가)/lastPrice 가 이 값 미만인 심볼은 제외 후 거래대금 순.
     """
     ex: set[str] = set(s.upper() for s in EXCLUDE_SYMBOLS)
     if extra_exclude:
@@ -799,6 +801,7 @@ def get_top_usdt_perpet_by_quote_volume(
     tick_resp = requests.get(f"{BASE_URL}/fapi/v1/ticker/24hr", timeout=15)
     tick_data = tick_resp.json()
     rows: List[Tuple[str, float]] = []
+    skipped_range = 0
     for row in tick_data:
         sym = row.get("symbol", "")
         if sym not in tradable:
@@ -807,15 +810,30 @@ def get_top_usdt_perpet_by_quote_volume(
             qv = float(row.get("quoteVolume", 0))
         except (TypeError, ValueError):
             continue
+        if min_24h_range_pct > 0.0:
+            try:
+                hi = float(row.get("highPrice", 0))
+                lo = float(row.get("lowPrice", 0))
+                last = float(row.get("lastPrice", 0))
+            except (TypeError, ValueError):
+                continue
+            if last <= 0:
+                continue
+            range_pct = (hi - lo) / last
+            if range_pct < min_24h_range_pct:
+                skipped_range += 1
+                continue
         rows.append((sym, qv))
 
     rows.sort(key=lambda x: x[1], reverse=True)
     out = [sym.lower() for sym, _ in rows[:limit]]
     logger.info(
-        "Universe (volume top %d): count=%d exclude=%s",
+        "Universe (volume top %d): count=%d exclude=%s min_24h_range_pct=%s skipped_range=%d",
         limit,
         len(out),
         sorted(ex),
+        min_24h_range_pct,
+        skipped_range,
     )
     return out
 

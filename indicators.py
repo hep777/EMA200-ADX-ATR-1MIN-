@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Deque, Dict, Optional
+from typing import Deque, Dict, List, Optional
 
 
 class TrendIndicatorComputer:
@@ -147,4 +147,36 @@ class TrendIndicatorComputer:
             "atr_ma30": atr_ma30,
             "rsi": self.rsi,
         }
+
+
+def atr_pct_wilder_last(
+    highs: List[float], lows: List[float], closes: List[float], period: int
+) -> Optional[float]:
+    """
+    종가 대비 ATR(Wilder) 비율. 1분봉 시퀀스 전체에서 마지막 ATR / 마지막 종가.
+    데이터가 부족하면 None.
+    """
+    n = len(closes)
+    if n != len(highs) or n != len(lows) or n < period:
+        return None
+    tr: List[float] = []
+    tr.append(highs[0] - lows[0])
+    for i in range(1, n):
+        pc = closes[i - 1]
+        tr.append(
+            max(
+                highs[i] - lows[i],
+                abs(highs[i] - pc),
+                abs(lows[i] - pc),
+            )
+        )
+    if len(tr) < period:
+        return None
+    atr = sum(tr[:period]) / float(period)
+    for j in range(period, len(tr)):
+        atr = (atr * (period - 1) + tr[j]) / float(period)
+    last = closes[-1]
+    if last <= 0:
+        return None
+    return atr / last
 
