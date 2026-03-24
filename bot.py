@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
+import subprocess
 import sys
 import threading
 import time
@@ -39,6 +41,7 @@ from config import (
     SWING_LOOKBACK_BARS,
     SWING_RIGHT_BARS,
     SYMBOL_REFRESH_INTERVAL,
+    SYSTEMD_SERVICE_NAME,
     TRENDLINE_MIN_POINTS,
     TRENDLINE_TOUCH_TOLERANCE_PCT,
     TRAILING_RANGE_RATIO,
@@ -685,6 +688,33 @@ def cmd_help() -> None:
     tg.send_help_message()
 
 
+def cmd_restart() -> None:
+    """텔레그램에서 systemd 서비스 재시작 (서버에서 봇이 systemctl 권한을 가져야 함)."""
+    tg.send_message(
+        "🔄 1초 뒤 서비스를 재시작합니다.\n"
+        "잠시 후 시작 알림이 오면 정상입니다. (실패 시 서버 SSH에서 점검)"
+    )
+    if os.name == "nt":
+        tg.send_message("❌ Windows 로컬에서는 텔레그램 재시작을 지원하지 않습니다.")
+        return
+    svc = shlex.quote(SYSTEMD_SERVICE_NAME)
+    try:
+        subprocess.Popen(
+            [
+                "/bin/bash",
+                "-c",
+                f"sleep 1 && systemctl restart {svc} 2>/dev/null || sudo -n systemctl restart {svc}",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as e:
+        logger.exception("cmd_restart: %s", e)
+        tg.send_message(f"❌ 재시작 명령 실행 실패: {e!s}")
+
+
 def cmd_stop() -> None:
     tg.send_message("🛑 프로세스 종료 요청 수신. 곧 종료됩니다.")
     shutdown_event.set()
@@ -809,6 +839,7 @@ def main() -> None:
 
     tg.register_command("status", cmd_status)
     tg.register_command("help", cmd_help)
+    tg.register_command("restart", cmd_restart)
     tg.register_command("stop", cmd_stop)
     tg.register_command("closeall", cmd_closeall)
     tg.start_polling()
@@ -835,7 +866,7 @@ def main() -> None:
         f"스윙 {SWING_LEFT_BARS}/{SWING_RIGHT_BARS} · 룩백 {SWING_LOOKBACK_BARS} · 터치≥{TRENDLINE_MIN_POINTS} · 트레일×{TRAILING_RANGE_RATIO}\n"
         f"마크폴링 {MARK_POLL_INTERVAL_SEC:.0f}s\n"
         f"감시 {len(tracked_symbols)} 심볼 (BTC/ETH 제외)\n"
-        f"텔레그램: /status /help /stop /closeall"
+        f"텔레그램: /status /help /restart /stop /closeall"
     )
 
     threading.Thread(target=mark_monitor_loop, daemon=True).start()

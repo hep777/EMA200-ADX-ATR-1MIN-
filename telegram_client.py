@@ -37,12 +37,12 @@ def send_help_message() -> None:
     send_message(
         "<b>📋 Trendline 봇 명령</b>\n\n"
         "/status — 잔고·포지션·추세선·대기 진입 수\n"
-        "/stop — 봇 프로세스 완전 종료 (신규 진입만 막는 게 아님)\n"
-        "/closeall — 거래소에 열린 포지션 전부 시장가 청산\n"
+        "/restart — 서버에서 봇 서비스 재시작 (PC 없이 가능)\n"
+        "/stop — 봇 프로세스 완전 종료\n"
+        "/closeall — 거래소 열린 포지션 전부 시장가 청산\n"
         "/help — 이 도움말\n\n"
-        "<b>봇 다시 켜기 (systemd)</b>\n"
-        "<code>sudo systemctl start atr_bot.service</code>\n"
-        "또는 <code>sudo systemctl restart atr_bot.service</code>"
+        "<i>/restart 는 서버에서 systemctl 권한이 있어야 합니다. "
+        "권한 오류 시 SSH로 sudoers 설정 또는 수동 재시작.</i>"
     )
 
 
