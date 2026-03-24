@@ -43,7 +43,7 @@ from config import (
     SWING_RIGHT_BARS,
     SYMBOL_REFRESH_INTERVAL,
     TRENDLINE_MIN_POINTS,
-    TRENDLINE_MIN_R2,
+    TRENDLINE_TOUCH_TOLERANCE_PCT,
     UNIVERSE_TOP_N,
     VOLUME_AVG_PERIOD,
     validate_secrets,
@@ -51,7 +51,7 @@ from config import (
     WEBSOCKET_PING_TIMEOUT,
 )
 from state_manager import load_state, remove_position, save_state, upsert_position
-from trend_strategy import detect_confirmed_swing, fit_regression, line_value
+from trend_strategy import detect_confirmed_swing, fit_outer_tangent_line, line_value
 
 logger = logging.getLogger("bot")
 
@@ -120,6 +120,14 @@ def _fmt(v: float) -> str:
 
 def _binance_link(sym: str) -> str:
     return f"https://www.binance.com/en/futures/{sym}"
+
+
+def _dedupe_swings_by_seq(points: List[Dict[str, float]]) -> List[Dict[str, float]]:
+    by_seq: Dict[int, Dict[str, float]] = {}
+    for p in points:
+        sq = int(p["seq"])
+        by_seq[sq] = p
+    return [by_seq[k] for k in sorted(by_seq.keys())]
 
 
 def _round_order_qty(symbol_upper: str, qty: float) -> float:
@@ -198,28 +206,31 @@ def rebuild_swings(symbol_upper: str) -> None:
             out_h.append({"seq": float(seqs[center]), "price": float(highs[center])})
         if lows[center] == min(lows[lo:hi]):
             out_l.append({"seq": float(seqs[center]), "price": float(lows[center])})
-    swing_points[symbol_upper] = {"highs": out_h, "lows": out_l}
+    swing_points[symbol_upper] = {
+        "highs": _dedupe_swings_by_seq(out_h),
+        "lows": _dedupe_swings_by_seq(out_l),
+    }
 
 
 def _line_from_swings(points: List[Dict[str, float]], kind: str, now_seq: int) -> Optional[Dict[str, Any]]:
     min_seq = now_seq - SWING_LOOKBACK_BARS + 1
     filt = [p for p in points if int(p["seq"]) >= min_seq]
+    filt.sort(key=lambda p: int(p["seq"]))
     if len(filt) < TRENDLINE_MIN_POINTS:
         return None
     xy = [(int(p["seq"]), float(p["price"])) for p in filt]
-    reg = fit_regression(xy)
+    reg = fit_outer_tangent_line(
+        xy,
+        kind,
+        TRENDLINE_MIN_POINTS,
+        TRENDLINE_TOUCH_TOLERANCE_PCT,
+    )
     if not reg:
-        return None
-    if kind == "up" and reg["slope"] <= 0:
-        return None
-    if kind == "down" and reg["slope"] >= 0:
-        return None
-    if reg["r2"] < TRENDLINE_MIN_R2:
         return None
     return {
         "slope": reg["slope"],
         "intercept": reg["intercept"],
-        "r2": reg["r2"],
+        "touch_count": int(reg["touch_count"]),
         "created_seq": now_seq,
         "last_swing_price": float(filt[-1]["price"]),
         "points": filt,
@@ -254,18 +265,20 @@ def update_swing_and_invalidation(symbol_upper: str) -> None:
 
     if "swing_high" in d:
         hs = sp["highs"]
-        if not hs or int(hs[-1]["seq"]) != seq:
+        if not any(int(p["seq"]) == seq for p in hs):
             hs.append({"seq": float(seq), "price": float(d["swing_high"])})
             up = t.get("up")
             if up and float(d["swing_high"]) < float(up["last_swing_price"]):
                 t["up"] = None
+                _close_breakout_on_trendline_invalid(symbol_upper, "up")
     if "swing_low" in d:
         ls = sp["lows"]
-        if not ls or int(ls[-1]["seq"]) != seq:
+        if not any(int(p["seq"]) == seq for p in ls):
             ls.append({"seq": float(seq), "price": float(d["swing_low"])})
             dn = t.get("down")
             if dn and float(d["swing_low"]) > float(dn["last_swing_price"]):
                 t["down"] = None
+                _close_breakout_on_trendline_invalid(symbol_upper, "down")
     rebuild_lines(symbol_upper)
 
 
@@ -360,6 +373,25 @@ def close_full_position(symbol_upper: str, pos: Dict[str, Any], reason: str, mar
         f"청산가(마크): {_fmt(mark)}\n손익: {pnl_pct:+.2f}%\n"
         f'<a href="{_binance_link(symbol_upper)}">Binance</a>'
     )
+
+
+def _close_breakout_on_trendline_invalid(symbol_upper: str, invalidated: str) -> None:
+    """invalidated: 'up' → 롱 브레이크아웃, 'down' → 숏 브레이크아웃 청산 (1차 익절 후 잔량 포함)."""
+    pos = active_positions.get(symbol_upper)
+    if not pos:
+        return
+    if str(pos.get("entry_kind")) != "breakout":
+        return
+    direction = str(pos["direction"])
+    if invalidated == "up" and direction != "long":
+        return
+    if invalidated == "down" and direction != "short":
+        return
+    try:
+        mark = float(get_mark_price(symbol_upper))
+    except Exception:
+        return
+    close_full_position(symbol_upper, pos, "추세선 무효화", mark)
 
 
 def process_position_on_closed_bar(symbol_upper: str, close_price: float, prev_close: float, seq: int) -> None:
@@ -662,7 +694,7 @@ def main() -> None:
     tg.send_message(
         f"🚀 Trendline 봇 시작\n"
         f"1분봉 · 레버 {DEFAULT_LEVERAGE}x · 진입 {POSITION_RISK_PCT*100:.0f}% · 최대 {MAX_CONCURRENT_POSITIONS}포지션\n"
-        f"스윙: 좌우 {SWING_LEFT_BARS}/{SWING_RIGHT_BARS} · 추세선 최소 {TRENDLINE_MIN_POINTS}점 · R²≥{TRENDLINE_MIN_R2}\n"
+        f"스윙: 좌우 {SWING_LEFT_BARS}/{SWING_RIGHT_BARS} · 추세선 최소 터치 {TRENDLINE_MIN_POINTS}회 · 터치허용오차 {TRENDLINE_TOUCH_TOLERANCE_PCT*100:.2f}%\n"
         f"감시 심볼: {len(tracked_symbols)} (BTC/ETH 제외)"
     )
 
